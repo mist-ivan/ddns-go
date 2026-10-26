@@ -2,6 +2,8 @@ package config
 
 import (
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -256,5 +258,164 @@ func TestSendHonorsSessionTimeout(t *testing.T) {
 	}
 	if elapsed > 4*time.Second {
 		t.Fatalf("send blocked for %v, session deadline did not apply", elapsed)
+	}
+}
+
+// --- 多源 fallback ---
+
+func TestGetIpv4AddrFromUrlFallsBack(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/html":
+			_, _ = w.Write([]byte("<html><body>maintenance</body></html>"))
+		case "/good":
+			_, _ = w.Write([]byte("203.0.113.7\n"))
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	conf := &DnsConfig{}
+	conf.Ipv4.URL = srv.URL + "/html, " + srv.URL + "/good"
+
+	if got := conf.getIpv4AddrFromUrl(); got != "203.0.113.7" {
+		t.Fatalf("expected fallback to the second source, got %q", got)
+	}
+}
+
+func TestGetIpv4AddrFromUrlKeepsTryingAfterHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/good" {
+			_, _ = w.Write([]byte("198.51.100.9"))
+			return
+		}
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	conf := &DnsConfig{}
+	conf.Ipv4.URL = srv.URL + "/broken, " + srv.URL + "/good"
+
+	if got := conf.getIpv4AddrFromUrl(); got != "198.51.100.9" {
+		t.Fatalf("expected fallback after HTTP error, got %q", got)
+	}
+}
+
+func TestGetIpv4AddrFromUrlReturnsEmptyWhenAllFail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	conf := &DnsConfig{}
+	conf.Ipv4.URL = srv.URL + "/a, " + srv.URL + "/b"
+
+	if got := conf.getIpv4AddrFromUrl(); got != "" {
+		t.Fatalf("expected empty result, got %q", got)
+	}
+}
+
+// --- 变更历史 ---
+
+func TestEmailHistoryAppendAndSummarize(t *testing.T) {
+	dir := t.TempDir()
+	withConfigPath(t, filepath.Join(dir, "config.yaml"))
+	_ = os.Remove(emailHistoryPath())
+
+	AppendEmailHistory(EmailHistoryEntry{Kind: historyKindBaseline, IPv4: "1.1.1.1"})
+	AppendEmailHistory(EmailHistoryEntry{Kind: historyKindChange, IPv4: "2.2.2.2", PrevIPv4: "1.1.1.1"})
+
+	summary := GetEmailHistorySummary(5, "zh")
+	if summary.Total != 2 {
+		t.Fatalf("total = %d, want 2", summary.Total)
+	}
+	if len(summary.Recent) != 2 {
+		t.Fatalf("recent = %d, want 2", len(summary.Recent))
+	}
+	// 新的在前
+	if summary.Recent[0].IPv4 != "2.2.2.2" {
+		t.Fatalf("newest entry first expected, got %q", summary.Recent[0].IPv4)
+	}
+	if summary.Recent[0].KindText != "IP 变更" {
+		t.Fatalf("kind text = %q", summary.Recent[0].KindText)
+	}
+	if summary.Recent[0].TimeText == "" {
+		t.Fatal("time text should be filled")
+	}
+	if summary.LastTime == "" {
+		t.Fatal("last time should be filled")
+	}
+}
+
+func TestEmailHistoryIsTrimmed(t *testing.T) {
+	dir := t.TempDir()
+	withConfigPath(t, filepath.Join(dir, "config.yaml"))
+	_ = os.Remove(emailHistoryPath())
+
+	for i := 0; i < maxEmailHistory+5; i++ {
+		AppendEmailHistory(EmailHistoryEntry{Kind: historyKindChange, IPv4: "10.0.0.1"})
+	}
+
+	lines := readEmailHistoryLines(emailHistoryPath())
+	if len(lines) != maxEmailHistory {
+		t.Fatalf("history kept %d lines, want %d", len(lines), maxEmailHistory)
+	}
+}
+
+func TestEmailHistorySummaryOnEmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	withConfigPath(t, filepath.Join(dir, "config.yaml"))
+	_ = os.Remove(emailHistoryPath())
+
+	summary := GetEmailHistorySummary(5, "en")
+	if summary.Total != 0 || len(summary.Recent) != 0 || summary.LastTime != "" {
+		t.Fatalf("expected empty summary, got %+v", summary)
+	}
+}
+
+// --- 获取失败告警的状态机 ---
+
+func TestFetchFailureTrackerAlertsOncePerOutage(t *testing.T) {
+	var tr fetchFailureTracker
+
+	for i := 1; i < fetchAlertThreshold; i++ {
+		if alert, recovered := tr.observe(true); alert || recovered {
+			t.Fatalf("round %d should not notify (alert=%v recovered=%v)", i, alert, recovered)
+		}
+	}
+
+	alert, recovered := tr.observe(true)
+	if !alert || recovered {
+		t.Fatalf("round %d should alert (alert=%v recovered=%v)", fetchAlertThreshold, alert, recovered)
+	}
+
+	if alert, _ := tr.observe(true); alert {
+		t.Fatal("a single outage must not alert twice")
+	}
+
+	if _, recovered := tr.observe(false); !recovered {
+		t.Fatal("recovery should be reported once")
+	}
+	if alert, recovered := tr.observe(false); alert || recovered {
+		t.Fatal("healthy rounds must stay silent")
+	}
+}
+
+func TestFetchFailureTrackerResetsAfterRecovery(t *testing.T) {
+	var tr fetchFailureTracker
+	for i := 0; i < fetchAlertThreshold; i++ {
+		tr.observe(true)
+	}
+	tr.observe(false) // 恢复
+
+	// 新一轮故障需要重新累计到阈值
+	for i := 1; i < fetchAlertThreshold; i++ {
+		if alert, _ := tr.observe(true); alert {
+			t.Fatalf("round %d of the second outage should not alert yet", i)
+		}
+	}
+	if alert, _ := tr.observe(true); !alert {
+		t.Fatal("second outage should alert again after the threshold")
 	}
 }

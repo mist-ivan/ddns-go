@@ -4,7 +4,7 @@
 新增「公网 IP 变更时发送邮件提醒」功能。其余行为与原版一致。
 
 - 源码：`/home/mist/work/ddns-go`（分支 `master`，提交 `0ea105f`）
-- 镜像：`ddns-go-email:6.17.7-email-0.1`（约 40 MB，多阶段构建）
+- 镜像：`ddns-go-email:6.17.7-email-0.2`（约 40 MB，多阶段构建）
 - 测试：`/home/mist/work/test`（假 SMTP + 假回调，可随时重跑）
 
 ## 与原版的差异
@@ -35,7 +35,11 @@
 7. 状态文件与配置文件同目录：`<配置文件路径>.email-state.json`，随挂载卷持久化；
    写入采用「临时文件 + rename」原子替换，写盘失败时自动降级到内存状态，**不会重复轰炸**。
 8. SMTP 会话有 45 秒硬超时，服务器半死时不会把 DNS 更新主循环一起拖住。
-9. 邮件通知与原有 Webhook 相互独立，可同时开启。
+9. 开启「获取失败时告警」后，连续 3 轮取不到 IP 发一封告警，恢复后再发一封恢复通知；
+   同一次故障只告警一次，恢复后的那一轮不会重复发基线邮件。
+10. 每次成功通知都会追加一条历史记录：`<配置文件路径>.email-history.jsonl`（最多保留 200 条），
+    网页「历史记录」区块展示上次通知时间、累计条数和最近 5 条。
+11. 邮件通知与原有 Webhook 相互独立，可同时开启。
 
 ## 检测间隔
 
@@ -55,7 +59,7 @@ fork 版把默认检测间隔从 300 秒改为 **600 秒（10 分钟）**：
 ```bash
 docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.1 -l :9876 -f 120
+  ddns-go-email:6.17.7-email-0.2 -l :9876 -f 120
 ```
 
 ## 配置字段
@@ -73,6 +77,7 @@ email:
     to: a@example.com, b@example.com   # 多个用逗号分隔
     encrypt: ssl            # ssl(465) / starttls(587) / none(25)
     onstart: true           # 首次启动也发基线邮件
+    alertonfetchfailure: false  # 连续 3 轮取不到 IP 时告警
 ```
 
 **加密方式**：
@@ -89,7 +94,7 @@ email:
 
 ```bash
 cd /home/mist/work/ddns-go
-sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.1 .
+sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.2 .
 ```
 
 ## 运行
@@ -98,7 +103,7 @@ sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.1 .
 sudo docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 \
   -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.1
+  ddns-go-email:6.17.7-email-0.2
 ```
 
 打开 `http://<主机IP>:9876`，配置 DNS 与邮件通知后保存即可。
@@ -122,6 +127,21 @@ python3 /home/mist/work/test/verify_mail.py
 - IP 未变 → 不重复发送
 
 ## 更新记录
+
+### 6.17.7-email-0.2
+
+| 改动 | 说明 |
+|---|---|
+| **修复多源 IP 探测的 fallback** | 原版在「接口返回 200 但内容里没有 IP」「读响应体失败」这两条路径上会直接 `return`，导致配置在后面的备用接口永远不会被尝试。现在只有真正解析出地址才算成功，否则继续试下一个接口（IPv4/IPv6 都修了） |
+| **新增 IP 变更历史** | 每次成功通知追加一行到 `<配置>.email-history.jsonl`，最多保留 200 条；网页「历史记录」区块展示上次通知时间、累计条数与最近 5 条 |
+| **新增获取失败告警（可开关）** | 连续 3 轮取不到公网 IP 时发一封告警，恢复后再发一封恢复通知；同一次故障只告警一次，恢复轮不重复发基线邮件 |
+
+配套改进：日志里输出接口响应体时会截断到 120 个字符，避免把整页 HTML 写进日志。
+
+新增测试：`TestGetIpv4AddrFromUrlFallsBack`、`TestGetIpv4AddrFromUrlKeepsTryingAfterHTTPError`、
+`TestGetIpv4AddrFromUrlReturnsEmptyWhenAllFail`、`TestEmailHistoryAppendAndSummarize`、
+`TestEmailHistoryIsTrimmed`、`TestEmailHistorySummaryOnEmptyFile`、
+`TestFetchFailureTrackerAlertsOncePerOutage`、`TestFetchFailureTrackerResetsAfterRecovery`。
 
 ### 6.17.7-email-0.1
 
@@ -159,3 +179,5 @@ python3 /home/mist/work/test/verify_mail.py
 - 状态是全局的（一份配置对应一个 IP 基线）；若配置了多个差异很大的 IP 来源，会合并成一条记录。
 - 未接入原版的 Webhook 变量体系（`#{ipv4Addr}` 等），邮件正文格式由本分支固定。
 - IPv6 过滤依赖 `/proc/net/if_inet6`；若 IPv6 来自远程 URL（容器内看不到该地址），无法判断临时标志，此时不做过滤。
+- 「获取失败」计数器只在内存里，容器重启后重新累计；历史文件记录的是**成功发出**的通知，失败的尝试只在日志里。
+- 历史文件与状态文件同目录（`/root`），换机器迁移时两个文件要一起带走。

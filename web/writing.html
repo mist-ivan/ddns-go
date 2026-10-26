@@ -448,11 +448,46 @@
               </div>
 
               <div class="form-group row">
+                <label data-i18n="Alert on fetch failure" for="EmailAlertOnFetchFailure"
+                  class="col-sm-2 col-form-label">Alert on fetch failure</label>
+                <div class="col-sm-10">
+                  <input type="checkbox" class="form-check-inline" style="margin-top: 5px"
+                    id="EmailAlertOnFetchFailure" name="EmailAlertOnFetchFailure"
+                    {{if .Email.AlertOnFetchFailure}}checked{{end}} />
+                  <small data-i18n-html="EmailAlertOnFetchHelp" id="EmailAlertOnFetchHelp"
+                    class="form-text text-muted"></small>
+                </div>
+              </div>
+
+              <div class="form-group row">
                 <label class="col-sm-2 col-form-label"></label>
                 <div class="col-sm-10">
                   <button data-i18n="Send test email" type="button" class="btn btn-primary btn-sm" id="emailTestBtn">
                     Send test email
                   </button>
+                </div>
+              </div>
+
+              <div class="form-group row">
+                <label data-i18n="History" class="col-sm-2 col-form-label">History</label>
+                <div class="col-sm-10">
+                  <div class="form-text text-muted" id="emailHistory">
+                    {{if .EmailHistory.Recent}}
+                    <div>
+                      <span data-i18n="Last notification">Last notification</span>: {{.EmailHistory.LastTime}}
+                      &nbsp;·&nbsp;
+                      <span data-i18n="Total records">Total</span>: {{.EmailHistory.Total}}
+                    </div>
+                    <ul class="mb-0" style="padding-left: 1.2em">
+                      {{range .EmailHistory.Recent}}
+                      <li>{{.TimeText}} · {{.KindText}}{{if .IPv4}} · IPv4 {{.IPv4}}
+                        → {{if .PrevIPv4}}{{.PrevIPv4}}{{else}}-{{end}}{{end}}</li>
+                      {{end}}
+                    </ul>
+                    {{else}}
+                    <span data-i18n="No history yet">No history yet</span>
+                    {{end}}
+                  </div>
                 </div>
               </div>
             </div>
@@ -502,6 +537,7 @@
     EmailTo: document.getElementById("EmailTo").value,
     EmailEncrypt: document.getElementById("EmailEncrypt").value,
     EmailOnStart: document.getElementById("EmailOnStart").checked,
+    EmailAlertOnFetchFailure: document.getElementById("EmailAlertOnFetchFailure").checked,
   };
   const defaultDnsConf = {
     Name: "",

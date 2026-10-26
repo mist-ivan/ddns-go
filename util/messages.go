@@ -59,6 +59,12 @@ func init() {
 	message.SetString(language.English, "邮件通知: 状态文件无法解析, 按首次运行处理: %s", "Email notification: cannot parse state file, treating as first run: %s")
 	message.SetString(language.English, "邮件通知: 状态写入失败 (%s), 已改用内存状态, 本次运行内不会重复提醒", "Email notification: cannot persist state (%s), falling back to in-memory state so the same change is not reported twice")
 	message.SetString(language.English, "邮件通知: 忽略临时/已弃用的 IPv6 地址: %s", "Email notification: ignoring temporary/deprecated IPv6 address(es): %s")
+	message.SetString(language.English, "邮件通知: 连续 %d 轮未能获取 IP, 已发送告警邮件", "Email notification: no public IP for %d consecutive rounds, alert sent")
+	message.SetString(language.English, "邮件通知: IP 获取失败告警发送失败: %s", "Email notification: failed to send the fetch-failure alert: %s")
+	message.SetString(language.English, "邮件通知: IP 获取已恢复, 已发送恢复通知", "Email notification: public IP detection recovered, notice sent")
+	message.SetString(language.English, "邮件通知: IP 获取恢复通知发送失败: %s", "Email notification: failed to send the recovery notice: %s")
+	message.SetString(language.English, "邮件通知: 写入历史记录失败: %s", "Email notification: failed to write history: %s")
+	message.SetString(language.English, "邮件通知: 写入历史记录失败: %v %v", "Email notification: failed to write history: %v %v")
 	message.SetString(language.English, "邮件测试失败: %s", "Email test failed: %s")
 	message.SetString(language.English, "邮件测试成功，已发送至: %s", "Email test succeeded, sent to: %s")
 

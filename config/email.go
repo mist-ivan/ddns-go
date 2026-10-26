@@ -41,6 +41,8 @@ type Email struct {
 	Encrypt string
 	// OnStart 首次运行（没有历史 IP 记录）时也发送一封基线邮件
 	OnStart bool
+	// AlertOnFetchFailure 连续多轮取不到公网 IP 时发送告警邮件
+	AlertOnFetchFailure bool
 }
 
 // smtpSessionTimeout 单次 SMTP 会话的总超时（从连接建立起算到会话结束）
@@ -205,7 +207,7 @@ func (e *Email) deliver(addr, host string, port int, auth smtp.Auth, from string
 
 // NotifyIPChangeEmail 当公网 IP 与上次通知过的 IP 不同时发信。
 // 首次运行（没有历史记录）时，若开启 OnStart 则发送一封基线邮件。
-func NotifyIPChangeEmail(conf *Config, ipv4, ipv6 string) {
+func NotifyIPChangeEmail(conf *Config, ipv4, ipv6 string, fetchFailed bool) {
 	if conf == nil || !conf.Email.Enable {
 		return
 	}
@@ -220,6 +222,10 @@ func NotifyIPChangeEmail(conf *Config, ipv4, ipv6 string) {
 	if ipv6 != "" {
 		ipv6 = filterUnstableIPv6(ipv6)
 	}
+
+	// 取 IP 失败的告警独立于变更通知：即使本轮一个地址都没拿到，也要能报出去
+	recoveredNotice := handleFetchHealth(conf, fetchFailed, ipv4, ipv6)
+
 	if ipv4 == "" && ipv6 == "" {
 		return
 	}
@@ -254,6 +260,13 @@ func NotifyIPChangeEmail(conf *Config, ipv4, ipv6 string) {
 		return
 	}
 
+	if firstRun && recoveredNotice {
+		// 恢复通知里已经带了当前 IP，不再重复发一封基线邮件
+		next.LastSent = time.Now().Unix()
+		storeEmailState(next)
+		return
+	}
+
 	subject, body := composeIPChangeMail(conf, state, ipv4, ipv6, firstRun)
 	if err := conf.Email.Send(subject, body); err != nil {
 		util.Log("邮件通知发送失败: %s", err)
@@ -263,11 +276,151 @@ func NotifyIPChangeEmail(conf *Config, ipv4, ipv6 string) {
 
 	next.LastSent = time.Now().Unix()
 	storeEmailState(next)
+
+	kind := historyKindChange
+	if firstRun {
+		kind = historyKindBaseline
+	}
+	AppendEmailHistory(EmailHistoryEntry{
+		Kind:     kind,
+		IPv4:     ipv4,
+		PrevIPv4: state.LastIPv4,
+		IPv6:     ipv6,
+		PrevIPv6: state.LastIPv6,
+	})
 	if firstRun {
 		util.Log("邮件通知: 已发送初始 IP 基线邮件 (%s / %s)", displayOrDash(ipv4), displayOrDash(ipv6))
 	} else {
 		util.Log("邮件通知: IP 已变更，通知邮件发送成功 (%s / %s)", displayOrDash(ipv4), displayOrDash(ipv6))
 	}
+}
+
+// fetchAlertThreshold 连续多少轮取不到 IP 才告警，避免网络抖动造成误报
+const fetchAlertThreshold = 3
+
+// fetchFailureTracker 记录连续失败次数，保证一次故障只告警一次
+type fetchFailureTracker struct {
+	consecutive int
+	alerted     bool
+}
+
+func (t *fetchFailureTracker) observe(failed bool) (alert bool, recovered bool) {
+	if !failed {
+		recovered = t.alerted
+		t.consecutive = 0
+		t.alerted = false
+		return false, recovered
+	}
+
+	t.consecutive++
+	if t.consecutive >= fetchAlertThreshold && !t.alerted {
+		t.alerted = true
+		return true, false
+	}
+	return false, false
+}
+
+var (
+	fetchTrackLock sync.Mutex
+	fetchTracker   fetchFailureTracker
+)
+
+// handleFetchHealth 处理"取不到公网 IP"的告警与恢复通知。
+// 返回值表示本轮是否成功发出了"已恢复"通知（调用方据此避免重复发基线邮件）。
+func handleFetchHealth(conf *Config, failed bool, ipv4, ipv6 string) bool {
+	if !conf.Email.AlertOnFetchFailure {
+		fetchTrackLock.Lock()
+		fetchTracker = fetchFailureTracker{}
+		fetchTrackLock.Unlock()
+		return false
+	}
+
+	fetchTrackLock.Lock()
+	alert, recovered := fetchTracker.observe(failed)
+	consecutive := fetchTracker.consecutive
+	fetchTrackLock.Unlock()
+
+	if alert {
+		subject, body := composeFetchAlertMail(conf, consecutive)
+		if err := conf.Email.Send(subject, body); err != nil {
+			util.Log("邮件通知: IP 获取失败告警发送失败: %s", err)
+			// 允许下一轮重试，避免一次发送失败就把告警吞掉
+			fetchTrackLock.Lock()
+			fetchTracker.alerted = false
+			fetchTrackLock.Unlock()
+			return false
+		}
+		AppendEmailHistory(EmailHistoryEntry{Kind: historyKindFetchFailed, IPv4: ipv4, IPv6: ipv6})
+		util.Log("邮件通知: 连续 %d 轮未能获取 IP, 已发送告警邮件", consecutive)
+	}
+
+	if recovered {
+		subject, body := composeRecoveredMail(conf, ipv4, ipv6)
+		if err := conf.Email.Send(subject, body); err != nil {
+			util.Log("邮件通知: IP 获取恢复通知发送失败: %s", err)
+			return false
+		}
+		AppendEmailHistory(EmailHistoryEntry{Kind: historyKindRecovered, IPv4: ipv4, IPv6: ipv6})
+		util.Log("邮件通知: IP 获取已恢复, 已发送恢复通知")
+		return true
+	}
+
+	return false
+}
+
+// composeFetchAlertMail 生成"取不到 IP"的告警邮件
+func composeFetchAlertMail(conf *Config, consecutive int) (subject, body string) {
+	zh := strings.HasPrefix(strings.ToLower(conf.Lang), "zh")
+	now := time.Now().Format("2006-01-02 15:04:05 -07:00")
+	hostname, _ := os.Hostname()
+	state := loadEmailState()
+
+	var b strings.Builder
+	if zh {
+		subject = fmt.Sprintf("[ddns-go] 连续 %d 轮未能获取公网 IP", consecutive)
+		fmt.Fprintf(&b, "ddns-go 已连续 %d 轮未能检测到公网 IP，域名解析可能已经停止更新。\n\n", consecutive)
+		fmt.Fprintf(&b, "时间: %s\n", now)
+		fmt.Fprintf(&b, "主机: %s\n", hostname)
+		fmt.Fprintf(&b, "最后已知 IPv4: %s\n", displayOrDash(state.LastIPv4))
+		fmt.Fprintf(&b, "最后已知 IPv6: %s\n", displayOrDash(state.LastIPv6))
+		b.WriteString("\n请检查容器网络、IP 查询接口是否可访问。恢复之后会再发一封通知。\n")
+	} else {
+		subject = fmt.Sprintf("[ddns-go] Failed to detect public IP for %d rounds", consecutive)
+		fmt.Fprintf(&b, "ddns-go has failed to detect the public IP for %d consecutive rounds; DNS records may be stale.\n\n", consecutive)
+		fmt.Fprintf(&b, "Time: %s\n", now)
+		fmt.Fprintf(&b, "Host: %s\n", hostname)
+		fmt.Fprintf(&b, "Last known IPv4: %s\n", displayOrDash(state.LastIPv4))
+		fmt.Fprintf(&b, "Last known IPv6: %s\n", displayOrDash(state.LastIPv6))
+		b.WriteString("\nCheck the container network and whether the IP lookup endpoints are reachable. A recovery notice will follow.\n")
+	}
+	b.WriteString("\n-- \nddns-go email notification\n")
+	return subject, b.String()
+}
+
+// composeRecoveredMail 生成"已恢复"的邮件
+func composeRecoveredMail(conf *Config, ipv4, ipv6 string) (subject, body string) {
+	zh := strings.HasPrefix(strings.ToLower(conf.Lang), "zh")
+	now := time.Now().Format("2006-01-02 15:04:05 -07:00")
+	hostname, _ := os.Hostname()
+
+	var b strings.Builder
+	if zh {
+		subject = "[ddns-go] 公网 IP 检测已恢复"
+		b.WriteString("ddns-go 已重新拿到公网 IP，检测恢复正常。\n\n")
+		fmt.Fprintf(&b, "时间: %s\n", now)
+		fmt.Fprintf(&b, "主机: %s\n", hostname)
+		fmt.Fprintf(&b, "当前 IPv4: %s\n", displayOrDash(ipv4))
+		fmt.Fprintf(&b, "当前 IPv6: %s\n", displayOrDash(ipv6))
+	} else {
+		subject = "[ddns-go] Public IP detection recovered"
+		b.WriteString("ddns-go can detect the public IP again.\n\n")
+		fmt.Fprintf(&b, "Time: %s\n", now)
+		fmt.Fprintf(&b, "Host: %s\n", hostname)
+		fmt.Fprintf(&b, "IPv4: %s\n", displayOrDash(ipv4))
+		fmt.Fprintf(&b, "IPv6: %s\n", displayOrDash(ipv6))
+	}
+	b.WriteString("\n-- \nddns-go email notification\n")
+	return subject, b.String()
 }
 
 // filterUnstableIPv6 从逗号分隔的地址串里剔除本机标记为临时/已弃用/待定的 IPv6。

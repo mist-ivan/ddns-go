@@ -62,9 +62,18 @@ func RunOnce() {
 	}
 
 	// 收集本轮所有配置检测到的公网 IP，用于邮件提醒
-	var detectedIPv4, detectedIPv6 []string
+	var (
+		detectedIPv4, detectedIPv6                   []string
+		ipv4Expected, ipv6Expected, ipv4Got, ipv6Got bool
+	)
 
 	for i, dc := range conf.DnsConf {
+		if dc.Ipv4.Enable {
+			ipv4Expected = true
+		}
+		if dc.Ipv6.Enable {
+			ipv6Expected = true
+		}
 		var dnsSelected DNS
 		switch dc.DNS.Name {
 		case "alidns":
@@ -132,9 +141,11 @@ func RunOnce() {
 		domains := dnsSelected.AddUpdateDomainRecords()
 		if domains.Ipv4Addr != "" {
 			detectedIPv4 = append(detectedIPv4, domains.Ipv4Addr)
+			ipv4Got = true
 		}
 		if domains.Ipv6Addr != "" {
 			detectedIPv6 = append(detectedIPv6, domains.Ipv6Addr)
+			ipv6Got = true
 		}
 		// webhook
 		v4Status, v6Status := config.ExecWebhook(&domains, &conf)
@@ -147,8 +158,10 @@ func RunOnce() {
 		}
 	}
 
-	// IP 变更邮件提醒（与 webhook 相互独立）
-	config.NotifyIPChangeEmail(&conf, uniqueAddr(detectedIPv4), uniqueAddr(detectedIPv6))
+	// IP 变更与获取失败告警（与 webhook 相互独立）
+	// 配置了某一族地址、但整轮都没取到，视为本轮检测失败
+	fetchFailed := (ipv4Expected && !ipv4Got) || (ipv6Expected && !ipv6Got)
+	config.NotifyIPChangeEmail(&conf, uniqueAddr(detectedIPv4), uniqueAddr(detectedIPv6), fetchFailed)
 
 	util.ForceCompareGlobal = false
 }

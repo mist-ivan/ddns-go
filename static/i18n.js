@@ -240,6 +240,30 @@ const I18N_MAP = {
     'en': 'Send test email',
     'zh-cn': '发送测试邮件'
   },
+  'Alert on fetch failure': {
+    'en': 'Alert on fetch failure',
+    'zh-cn': '获取失败时告警'
+  },
+  'EmailAlertOnFetchHelp': {
+    'en': 'Sends an alert after 3 consecutive rounds without a public IP, and a recovery notice once it works again. Off by default.',
+    'zh-cn': '连续 3 轮（约 30 分钟）取不到公网 IP 时发一封告警，恢复后再发一封恢复通知。默认关闭。'
+  },
+  'History': {
+    'en': 'History',
+    'zh-cn': '历史记录'
+  },
+  'Last notification': {
+    'en': 'Last notification',
+    'zh-cn': '上次通知'
+  },
+  'Total records': {
+    'en': 'Total',
+    'zh-cn': '累计'
+  },
+  'No history yet': {
+    'en': 'No history yet',
+    'zh-cn': '暂无通知记录'
+  },
   'Try it': {
     'en': 'Try it',
     'zh-cn': '模拟测试Webhook'

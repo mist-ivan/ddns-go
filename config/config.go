@@ -258,31 +258,45 @@ func (conf *DnsConfig) getIpv4AddrFromInterface() string {
 	return ""
 }
 
+// getIpv4AddrFromUrl 依次尝试多个接口地址。
+// 只有真正解析出地址才算成功：连接失败、读体失败、返回内容里没有 IP，
+// 都会继续尝试下一个接口（原版这几处会直接返回空，导致备用源形同虚设）。
 func (conf *DnsConfig) getIpv4AddrFromUrl() string {
 	client := util.CreateBoundNoProxyHTTPClient("tcp4", conf.HttpInterface)
-	urls := strings.Split(conf.Ipv4.URL, ",")
-	for _, url := range urls {
+	for _, url := range strings.Split(conf.Ipv4.URL, ",") {
 		url = strings.TrimSpace(url)
-		resp, err := client.Get(url)
-		if err != nil {
-			util.Log("通过接口获取IPv4失败! 接口地址: %s", url)
-			util.Log("异常信息: %s", err)
+		if url == "" {
 			continue
 		}
-		defer resp.Body.Close()
-		lr := io.LimitReader(resp.Body, 1024000)
-		body, err := io.ReadAll(lr)
-		if err != nil {
-			util.Log("异常信息: %s", err)
-			continue
+		if addr := fetchIPv4FromURL(client, url); addr != "" {
+			return addr
 		}
-		result := Ipv4Reg.FindString(string(body))
-		if result == "" {
-			util.Log("获取IPv4结果失败! 接口: %s ,返回值: %s", url, string(body))
-		}
-		return result
 	}
 	return ""
+}
+
+// fetchIPv4FromURL 请求单个接口并解析出 IPv4，任何一步失败都返回空字符串
+func fetchIPv4FromURL(client *http.Client, url string) string {
+	resp, err := client.Get(url)
+	if err != nil {
+		util.Log("通过接口获取IPv4失败! 接口地址: %s", url)
+		util.Log("异常信息: %s", err)
+		return ""
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024000))
+	if err != nil {
+		util.Log("异常信息: %s", err)
+		return ""
+	}
+
+	result := Ipv4Reg.FindString(string(body))
+	if result == "" {
+		util.Log("获取IPv4结果失败! 接口: %s ,返回值: %s", url, truncateForLog(string(body), 120))
+		return ""
+	}
+	return result
 }
 
 func findIPv6InText(text string) string {
@@ -404,32 +418,52 @@ func (conf *DnsConfig) getIpv6AddrFromInterface() string {
 	return ""
 }
 
+// getIpv6AddrFromUrl 同 getIpv4AddrFromUrl，取不到地址时继续尝试下一个接口
 func (conf *DnsConfig) getIpv6AddrFromUrl() string {
 	client := util.CreateBoundNoProxyHTTPClient("tcp6", conf.HttpInterface)
-	urls := strings.Split(conf.Ipv6.URL, ",")
-	for _, url := range urls {
+	for _, url := range strings.Split(conf.Ipv6.URL, ",") {
 		url = strings.TrimSpace(url)
-		resp, err := client.Get(url)
-		if err != nil {
-			util.Log("通过接口获取IPv6失败! 接口地址: %s", url)
-			util.Log("异常信息: %s", err)
+		if url == "" {
 			continue
 		}
-
-		defer resp.Body.Close()
-		lr := io.LimitReader(resp.Body, 1024000)
-		body, err := io.ReadAll(lr)
-		if err != nil {
-			util.Log("异常信息: %s", err)
-			continue
+		if addr := fetchIPv6FromURL(client, url); addr != "" {
+			return addr
 		}
-		result := findIPv6InText(string(body))
-		if result == "" {
-			util.Log("获取IPv6结果失败! 接口: %s ,返回值: %s", url, string(body))
-		}
-		return result
 	}
 	return ""
+}
+
+// fetchIPv6FromURL 请求单个接口并解析出 IPv6，任何一步失败都返回空字符串
+func fetchIPv6FromURL(client *http.Client, url string) string {
+	resp, err := client.Get(url)
+	if err != nil {
+		util.Log("通过接口获取IPv6失败! 接口地址: %s", url)
+		util.Log("异常信息: %s", err)
+		return ""
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024000))
+	if err != nil {
+		util.Log("异常信息: %s", err)
+		return ""
+	}
+
+	result := findIPv6InText(string(body))
+	if result == "" {
+		util.Log("获取IPv6结果失败! 接口: %s ,返回值: %s", url, truncateForLog(string(body), 120))
+		return ""
+	}
+	return result
+}
+
+// truncateForLog 截断日志里的响应体，避免把整页 HTML 写进日志
+func truncateForLog(s string, max int) string {
+	s = strings.TrimSpace(strings.NewReplacer("\r", " ", "\n", " ").Replace(s))
+	if len([]rune(s)) <= max {
+		return s
+	}
+	return string([]rune(s)[:max]) + "...(truncated)"
 }
 
 // GetIpv6Addr 获得IPv6地址

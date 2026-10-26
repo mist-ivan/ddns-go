@@ -38,6 +38,12 @@ lang: zh
 	t.Setenv(util.ConfigFilePathENV, cfgPath)
 	config.ResetConfigCache()
 
+	// 预置一条历史，验证页面能渲染出来
+	history := `{"time":1700000000,"kind":"change","ipv4":"2.2.2.2","prevIpv4":"1.1.1.1"}` + "\n"
+	if err := os.WriteFile(cfgPath+".email-history.jsonl", []byte(history), 0600); err != nil {
+		t.Fatal(err)
+	}
+
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/", nil)
 	Writing(rec, req)
@@ -53,6 +59,8 @@ lang: zh
 		`id="EmailTo"`,
 		`value="you@example.com"`,
 		`id="emailTestBtn"`,
+		`id="EmailAlertOnFetchFailure"`,
+		`id="emailHistory"`,
 	}
 	for _, want := range checks {
 		if !strings.Contains(body, want) {
@@ -65,6 +73,10 @@ lang: zh
 	}
 	if !strings.Contains(body, "checked") {
 		t.Fatal("EmailEnable / EmailOnStart should render as checked")
+	}
+	// 历史记录应渲染出预置的那条
+	if !strings.Contains(body, "2.2.2.2") || !strings.Contains(body, "IP 变更") {
+		t.Fatal("email history entry should be rendered in the page")
 	}
 }
 
@@ -104,6 +116,7 @@ lang: zh
       "EmailTo": "a@x.com, b@y.com",
       "EmailEncrypt": "starttls",
       "EmailOnStart": true,
+      "EmailAlertOnFetchFailure": true,
       "DnsConf": []
     }`
 
@@ -125,6 +138,7 @@ lang: zh
 		"smtpport: 587",
 		"encrypt: starttls",
 		"onstart: true",
+		"alertonfetchfailure: true",
 		"enable: true",
 		"to: a@x.com, b@y.com",
 		"password: saved-secret",

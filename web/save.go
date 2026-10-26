@@ -45,6 +45,7 @@ func checkAndSave(request *http.Request) string {
 		EmailTo            string       `json:"EmailTo"`
 		EmailEncrypt       string       `json:"EmailEncrypt"`
 		EmailOnStart       bool         `json:"EmailOnStart"`
+		EmailAlertOnFetch  bool         `json:"EmailAlertOnFetchFailure"`
 		DnsConf            []dnsConf4JS `json:"DnsConf"`
 	}
 
@@ -80,6 +81,7 @@ func checkAndSave(request *http.Request) string {
 	conf.Email.To = strings.TrimSpace(data.EmailTo)
 	conf.Email.Encrypt = strings.TrimSpace(data.EmailEncrypt)
 	conf.Email.OnStart = data.EmailOnStart
+	conf.Email.AlertOnFetchFailure = data.EmailAlertOnFetch
 
 	// 如果新密码不为空则检查是否够强, 内/外网要求强度不同
 	conf.Username = usernameNew
