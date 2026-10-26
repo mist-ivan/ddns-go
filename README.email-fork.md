@@ -4,7 +4,7 @@
 新增「公网 IP 变更时发送邮件提醒」功能。其余行为与原版一致。
 
 - 源码：`/home/mist/work/ddns-go`（分支 `main`，以仓库当前 HEAD 为准）
-- 镜像：`ddns-go-email:6.17.7-email-0.4`（约 40 MB，多阶段构建）
+- 镜像：`ddns-go-email:6.17.7-email-0.5`（约 40 MB，多阶段构建）
 - 测试：`/home/mist/work/test`（假 SMTP + 假回调，可随时重跑）
 
 ## 与原版的差异
@@ -63,7 +63,7 @@ fork 版把默认检测间隔从 300 秒改为 **600 秒（10 分钟）**：
 ```bash
 docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.4 -l :9876 -f 120
+  ddns-go-email:6.17.7-email-0.5 -l :9876 -f 120
 ```
 
 ## 配置字段
@@ -100,7 +100,7 @@ email:
 
 ```bash
 cd /home/mist/work/ddns-go
-sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.4 .
+sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.5 .
 ```
 
 ## 运行
@@ -109,7 +109,7 @@ sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.4 .
 sudo docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 \
   -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.4
+  ddns-go-email:6.17.7-email-0.5
 ```
 
 打开 `http://<主机IP>:9876`，配置 DNS 与邮件通知后保存即可。
@@ -133,6 +133,16 @@ python3 /home/mist/work/test/verify_mail.py
 - IP 未变 → 不重复发送
 
 ## 更新记录
+
+### 6.17.7-email-0.5
+
+| 改动 | 说明 |
+|---|---|
+| **修复日志面板位置** | `common.css` 里的固定定位规则写的是 `.col-md-6.logs-panel`，0.4 把列宽改成 `col-md-10` 后选择器不再匹配，日志面板退回文档流、必须滚到页面最底部才能看到。现在日志面板是**居中的固定浮层**（顶部 8vh、最高 80vh），`#mask` 也改为覆盖整个视口 |
+| **默认语言改为中文** | 配置里没写 `lang` 时，`GetConfigCached` 会把语言落为 `zh`——界面文案和运行日志都以中文呈现。（之前空语言会退回英文；注意 `CompatibleConfig` 改的是值拷贝，所以要在缓存实例上设置） |
+| **新增「清除已保存的密码」** | SMTP 密码一直只能"留空=不修改"，想删掉只能改 YAML。现在密码已设置时会出现「清除已保存的密码」按钮，保存后生效（`EmailPasswordClear`） |
+
+新增测试：`TestEmptyLangDefaultsToChinese`、`TestSaveCanClearEmailPassword`。
 
 ### 6.17.7-email-0.4
 
