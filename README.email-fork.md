@@ -4,7 +4,7 @@
 新增「公网 IP 变更时发送邮件提醒」功能。其余行为与原版一致。
 
 - 源码：`/home/mist/work/ddns-go`（分支 `master`，提交 `0ea105f`）
-- 镜像：`ddns-go-email:6.17.7-email.3`（约 40 MB，多阶段构建）
+- 镜像：`ddns-go-email:6.17.7-email-0.1`（约 40 MB，多阶段构建）
 - 测试：`/home/mist/work/test`（假 SMTP + 假回调，可随时重跑）
 
 ## 与原版的差异
@@ -55,7 +55,7 @@ fork 版把默认检测间隔从 300 秒改为 **600 秒（10 分钟）**：
 ```bash
 docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email.3 -l :9876 -f 120
+  ddns-go-email:6.17.7-email-0.1 -l :9876 -f 120
 ```
 
 ## 配置字段
@@ -89,7 +89,7 @@ email:
 
 ```bash
 cd /home/mist/work/ddns-go
-sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email.3 .
+sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.1 .
 ```
 
 ## 运行
@@ -98,7 +98,7 @@ sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email.3 .
 sudo docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 \
   -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email.3
+  ddns-go-email:6.17.7-email-0.1
 ```
 
 打开 `http://<主机IP>:9876`，配置 DNS 与邮件通知后保存即可。
@@ -123,7 +123,10 @@ python3 /home/mist/work/test/verify_mail.py
 
 ## 更新记录
 
-### 6.17.7-email.3
+### 6.17.7-email-0.1
+
+首个正式版本号。此前临时 tag 为 `6.17.7-email.3`（`sha256:23510baa...`），
+本次仅重命名 tag 并把编译期版本号对齐为 `6.17.7-email-0.1`，功能代码无差异。
 
 针对稳定性做了三项修复，均有单元测试覆盖：
 
