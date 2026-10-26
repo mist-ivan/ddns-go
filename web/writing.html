@@ -298,7 +298,7 @@
               <div class="form-group row">
                 <label data-i18n="Username" for="Username" class="col-sm-2 col-form-label">Username</label>
                 <div class="col-sm-10">
-                  <input class="form-control form" name="Username" id="Username" value="{{.Email.Username}}"
+                  <input class="form-control form" name="Username" id="Username" value="{{.Username}}"
                     autocomplete="username" aria-describedby="UsernameHelp" />
                   <small data-i18n-html="accountHelp" id="UsernameHelp" class="form-text text-muted"></small>
                 </div>
@@ -389,10 +389,10 @@
                 <label data-i18n="Encryption" for="EmailEncrypt" class="col-sm-2 col-form-label">Encryption</label>
                 <div class="col-sm-10">
                   <select class="form-control form" name="EmailEncrypt" id="EmailEncrypt">
-                    <option value="ssl" {{if or (eq .Email.Encrypt "") (eq .Email.Encrypt "ssl")}}selected{{end}}>SSL / 隐式 TLS (465)
+                    <option value="ssl" {{if or (eq .Email.Encrypt "ssl") (and (eq .Email.Encrypt "") (ne .Email.SMTPPort 587) (ne .Email.SMTPPort 25))}}selected{{end}}>SSL / 隐式 TLS (465)
                     </option>
-                    <option value="starttls" {{if eq .Email.Encrypt "starttls"}}selected{{end}}>STARTTLS (587)</option>
-                    <option value="none" {{if eq .Email.Encrypt "none"}}selected{{end}}>None / 不加密 (25)</option>
+                    <option value="starttls" {{if or (eq .Email.Encrypt "starttls") (and (eq .Email.Encrypt "") (eq .Email.SMTPPort 587))}}selected{{end}}>STARTTLS (587)</option>
+                    <option value="none" {{if or (eq .Email.Encrypt "none") (and (eq .Email.Encrypt "") (eq .Email.SMTPPort 25))}}selected{{end}}>None / 不加密 (25)</option>
                   </select>
                   <small data-i18n-html="EmailEncryptHelp" id="EmailEncryptHelp" class="form-text text-muted"></small>
                 </div>
@@ -658,6 +658,20 @@
         break;
     }
   });
+
+  // SMTP 端口变化时自动带出常用加密方式，降低 587+SSL、465+STARTTLS 这类配错
+  const $smtpPort = document.getElementById("EmailSMTPPort");
+  const $smtpEncrypt = document.getElementById("EmailEncrypt");
+  const smtpEncryptByPort = { "465": "ssl", "587": "starttls", "25": "none" };
+  if ($smtpPort && $smtpEncrypt) {
+    $smtpPort.addEventListener('change', () => {
+      const encrypt = smtpEncryptByPort[String($smtpPort.value).trim()];
+      if (encrypt) {
+        $smtpEncrypt.value = encrypt;
+        globalConf.EmailEncrypt = encrypt;
+      }
+    });
+  }
 
   // 处理切换IP获取方式时的UI变化
   document.querySelectorAll('[name=Ipv4GetType], [name=Ipv6GetType]').forEach($input => {

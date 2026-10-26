@@ -71,6 +71,10 @@ lang: zh
 	if strings.Contains(body, `value="secret"`) {
 		t.Fatal("SMTP password must not be rendered into the page")
 	}
+	// 后台登录用户名不能被 SMTP 用户名覆盖
+	if !strings.Contains(body, `id="Username" value="admin"`) {
+		t.Fatal("admin username field must render the login username, not the SMTP username")
+	}
 	if !strings.Contains(body, "checked") {
 		t.Fatal("EmailEnable / EmailOnStart should render as checked")
 	}

@@ -3,6 +3,7 @@ package dns
 import (
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jeessy2/ddns-go/v6/config"
@@ -38,6 +39,10 @@ var (
 	}
 
 	Ipcache = [][2]util.IpCache{}
+
+	// runOnceMu 串行化 RunOnce：定时器与“保存配置后立即执行”可能同时触发，
+	// 并发运行会让邮件状态判断重复、Ipcache 竞争。
+	runOnceMu sync.Mutex
 )
 
 // RunTimer 定时运行
@@ -50,6 +55,9 @@ func RunTimer(delay time.Duration) {
 
 // RunOnce RunOnce
 func RunOnce() {
+	runOnceMu.Lock()
+	defer runOnceMu.Unlock()
+
 	conf, err := config.GetConfigCached()
 	if err != nil {
 		return
@@ -68,10 +76,12 @@ func RunOnce() {
 	)
 
 	for i, dc := range conf.DnsConf {
-		if dc.Ipv4.Enable {
+		// 只有“启用且确实配置了域名”的地址族才算期望；
+		// 否则新增配置默认勾选 IPv6 但只填 IPv4 域名时，会误报 IPv6 获取失败。
+		if dc.Ipv4.Enable && hasDomains(dc.Ipv4.Domains) {
 			ipv4Expected = true
 		}
-		if dc.Ipv6.Enable {
+		if dc.Ipv6.Enable && hasDomains(dc.Ipv6.Domains) {
 			ipv6Expected = true
 		}
 		var dnsSelected DNS
@@ -159,11 +169,25 @@ func RunOnce() {
 	}
 
 	// IP 变更与获取失败告警（与 webhook 相互独立）
-	// 配置了某一族地址、但整轮都没取到，视为本轮检测失败
-	fetchFailed := (ipv4Expected && !ipv4Got) || (ipv6Expected && !ipv6Got)
-	config.NotifyIPChangeEmail(&conf, uniqueAddr(detectedIPv4), uniqueAddr(detectedIPv6), fetchFailed)
+	// 按地址族记录，告警文案才能准确说明是 IPv4 还是 IPv6 失败。
+	config.NotifyIPChangeEmail(&conf, uniqueAddr(detectedIPv4), uniqueAddr(detectedIPv6), config.FetchStatus{
+		IPv4Expected: ipv4Expected,
+		IPv4OK:       ipv4Got,
+		IPv6Expected: ipv6Expected,
+		IPv6OK:       ipv6Got,
+	})
 
 	util.ForceCompareGlobal = false
+}
+
+// hasDomains 判断域名列表里是否有非空项
+func hasDomains(domains []string) bool {
+	for _, d := range domains {
+		if strings.TrimSpace(d) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // uniqueAddr 去重并拼接地址，正常情况下只会有一个公网 IP

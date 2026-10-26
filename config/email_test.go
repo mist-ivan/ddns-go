@@ -1,31 +1,60 @@
 package config
 
 import (
+	"bufio"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jeessy2/ddns-go/v6/util"
 )
 
-func TestSplitRecipients(t *testing.T) {
-	got := splitRecipients(" a@x.com, b@y.com;c@z.com\n\nd@w.com ")
+func TestParseRecipients(t *testing.T) {
+	got, err := parseRecipients(" a@x.com, b@y.com;c@z.com\n\nd@w.com ")
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := []string{"a@x.com", "b@y.com", "c@z.com", "d@w.com"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		if got[i].Address != want[i] {
 			t.Fatalf("got %v, want %v", got, want)
 		}
 	}
-	if n := len(splitRecipients("")); n != 0 {
-		t.Fatalf("empty input should yield no recipients, got %d", n)
+	if _, err := parseRecipients(""); err == nil {
+		t.Fatal("empty input should be rejected")
+	}
+}
+
+func TestParseRecipientsWithDisplayName(t *testing.T) {
+	got, err := parseRecipients(`"Doe, John" <john@example.com>, jane@example.com`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Address != "john@example.com" || got[1].Address != "jane@example.com" {
+		t.Fatalf("unexpected parsed recipients: %+v", got)
+	}
+}
+
+func TestParseSenderKeepsDisplayNameForHeader(t *testing.T) {
+	envelope, header, err := parseSender("ddns-go <you@example.com>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envelope != "you@example.com" {
+		t.Fatalf("envelope = %q, want you@example.com", envelope)
+	}
+	if !strings.Contains(header, "ddns-go") || !strings.Contains(header, "<you@example.com>") {
+		t.Fatalf("header = %q", header)
 	}
 }
 
@@ -76,6 +105,17 @@ func TestComposeIPChangeMailBaselineEN(t *testing.T) {
 	}
 }
 
+func TestComposeIPChangeMailIPv6Only(t *testing.T) {
+	conf := &Config{Lang: "zh"}
+	subject, _ := composeIPChangeMail(conf, emailState{LastIPv6: "2001:db8::1"}, "", "2001:db8::2", false)
+	if !strings.Contains(subject, "IPv6") || !strings.Contains(subject, "2001:db8::2") {
+		t.Fatalf("IPv6-only subject is wrong: %s", subject)
+	}
+	if strings.Contains(subject, "- -> -") {
+		t.Fatalf("IPv6-only subject must not contain '- -> -': %s", subject)
+	}
+}
+
 func TestEmailValidate(t *testing.T) {
 	if err := (&Email{}).Validate(); err == nil {
 		t.Fatal("empty config should not validate")
@@ -83,6 +123,24 @@ func TestEmailValidate(t *testing.T) {
 	e := &Email{SMTPHost: "smtp.x.com", To: "a@x.com", From: "b@x.com"}
 	if err := e.Validate(); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
+	}
+
+	// 常见误填：把 host:port 整体填进服务器框
+	hostPort := &Email{SMTPHost: "smtp.x.com:465", To: "a@x.com", From: "b@x.com"}
+	if err := hostPort.Validate(); err == nil {
+		t.Fatal("host:port should be rejected")
+	}
+
+	// 未知加密方式不能静默降级为明文
+	badEncrypt := &Email{SMTPHost: "smtp.x.com", To: "a@x.com", From: "b@x.com", Encrypt: "foo"}
+	if err := badEncrypt.Validate(); err == nil {
+		t.Fatal("unknown encrypt should be rejected")
+	}
+
+	// 带显示名的 From/To 是合法配置
+	displayName := &Email{SMTPHost: "smtp.x.com", To: `"Alice" <a@x.com>`, From: "ddns-go <b@x.com>"}
+	if err := displayName.Validate(); err != nil {
+		t.Fatalf("display-name address rejected: %v", err)
 	}
 }
 
@@ -259,6 +317,302 @@ func TestSendHonorsSessionTimeout(t *testing.T) {
 	if elapsed > 4*time.Second {
 		t.Fatalf("send blocked for %v, session deadline did not apply", elapsed)
 	}
+}
+
+// TestSendUsesBareEnvelopeAndDoesNotRetryAfterQuit 覆盖两个回归点：
+// 1. From 的显示名只能出现在邮件头，MAIL FROM 必须是裸地址；
+// 2. DATA 已被 250 接收后，QUIT 断连不能触发整封重发。
+func TestSendUsesBareEnvelopeAndDoesNotRetryAfterQuit(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("cannot listen: %v", err)
+	}
+	defer ln.Close()
+
+	var (
+		mu           sync.Mutex
+		mailFrom     []string
+		messageCount int
+	)
+	quitSeen := make(chan struct{})
+	var quitOnce sync.Once
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				br := bufio.NewReader(c)
+				_, _ = fmt.Fprint(c, "220 test-smtp\r\n")
+				inData := false
+				for {
+					line, err := br.ReadString('\n')
+					if err != nil {
+						return
+					}
+					line = strings.TrimRight(line, "\r\n")
+					if inData {
+						if line == "." {
+							inData = false
+							mu.Lock()
+							messageCount++
+							mu.Unlock()
+							_, _ = fmt.Fprint(c, "250 queued\r\n")
+						}
+						continue
+					}
+					upper := strings.ToUpper(line)
+					switch {
+					case strings.HasPrefix(upper, "EHLO"):
+						_, _ = fmt.Fprint(c, "250-test\r\n250-AUTH PLAIN LOGIN\r\n250 OK\r\n")
+					case strings.HasPrefix(upper, "AUTH"):
+						_, _ = fmt.Fprint(c, "235 ok\r\n")
+					case strings.HasPrefix(upper, "MAIL FROM"):
+						mu.Lock()
+						mailFrom = append(mailFrom, line)
+						mu.Unlock()
+						_, _ = fmt.Fprint(c, "250 ok\r\n")
+					case strings.HasPrefix(upper, "RCPT TO"):
+						_, _ = fmt.Fprint(c, "250 ok\r\n")
+					case upper == "DATA":
+						inData = true
+						_, _ = fmt.Fprint(c, "354 go\r\n")
+					case upper == "QUIT":
+						// 模拟服务器收到 QUIT 后直接断开，不回 221
+						quitOnce.Do(func() { close(quitSeen) })
+						return
+					default:
+						_, _ = fmt.Fprint(c, "250 ok\r\n")
+					}
+				}
+			}(conn)
+		}
+	}()
+
+	addr := ln.Addr().(*net.TCPAddr)
+	email := &Email{
+		Enable:   true,
+		SMTPHost: "127.0.0.1",
+		SMTPPort: addr.Port,
+		Username: "test@example.com",
+		Password: "secret",
+		From:     "ddns-go <test@example.com>",
+		To:       `"Alice" <alice@example.com>`,
+		Encrypt:  "none",
+	}
+	if err := email.Send("subject", "body"); err != nil {
+		t.Fatalf("Send returned error after successful DATA: %v", err)
+	}
+
+	select {
+	case <-quitSeen:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not receive QUIT")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if messageCount != 1 {
+		t.Fatalf("message accepted %d times, want 1 (QUIT failure must not resend)", messageCount)
+	}
+	if len(mailFrom) != 1 || mailFrom[0] != "MAIL FROM:<test@example.com>" {
+		t.Fatalf("unexpected MAIL FROM: %v", mailFrom)
+	}
+}
+
+// --- 邮件状态机 ---
+
+type smtpTestServer struct {
+	ln        net.Listener
+	failFirst bool
+	mu        sync.Mutex
+	conns     int
+	messages  int
+	mailFrom  []string
+}
+
+func newSMTPTestServer(t *testing.T, failFirst bool) *smtpTestServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("cannot listen: %v", err)
+	}
+	s := &smtpTestServer{ln: ln, failFirst: failFirst}
+	go s.serve()
+	t.Cleanup(func() { _ = ln.Close() })
+	return s
+}
+
+func (s *smtpTestServer) port() int {
+	return s.ln.Addr().(*net.TCPAddr).Port
+}
+
+func (s *smtpTestServer) serve() {
+	for {
+		conn, err := s.ln.Accept()
+		if err != nil {
+			return
+		}
+		go s.handle(conn)
+	}
+}
+
+func (s *smtpTestServer) handle(c net.Conn) {
+	defer c.Close()
+	s.mu.Lock()
+	s.conns++
+	connNo := s.conns
+	s.mu.Unlock()
+	if s.failFirst && connNo == 1 {
+		return
+	}
+
+	br := bufio.NewReader(c)
+	_, _ = fmt.Fprint(c, "220 test-smtp\r\n")
+	inData := false
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			return
+		}
+		line = strings.TrimRight(line, "\r\n")
+		if inData {
+			if line == "." {
+				inData = false
+				s.mu.Lock()
+				s.messages++
+				s.mu.Unlock()
+				_, _ = fmt.Fprint(c, "250 queued\r\n")
+			}
+			continue
+		}
+		upper := strings.ToUpper(line)
+		switch {
+		case strings.HasPrefix(upper, "EHLO"):
+			_, _ = fmt.Fprint(c, "250-test\r\n250-AUTH PLAIN LOGIN\r\n250 OK\r\n")
+		case strings.HasPrefix(upper, "AUTH"):
+			_, _ = fmt.Fprint(c, "235 ok\r\n")
+		case strings.HasPrefix(upper, "MAIL FROM"):
+			s.mu.Lock()
+			s.mailFrom = append(s.mailFrom, line)
+			s.mu.Unlock()
+			_, _ = fmt.Fprint(c, "250 ok\r\n")
+		case strings.HasPrefix(upper, "RCPT TO"):
+			_, _ = fmt.Fprint(c, "250 ok\r\n")
+		case upper == "DATA":
+			inData = true
+			_, _ = fmt.Fprint(c, "354 go\r\n")
+		case upper == "QUIT":
+			_, _ = fmt.Fprint(c, "221 bye\r\n")
+			return
+		default:
+			_, _ = fmt.Fprint(c, "250 ok\r\n")
+		}
+	}
+}
+
+func (s *smtpTestServer) stats() (int, []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.messages, append([]string{}, s.mailFrom...)
+}
+
+func waitForMessages(t *testing.T, s *smtpTestServer, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if n, _ := s.stats(); n >= want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	n, _ := s.stats()
+	t.Fatalf("got %d messages, want at least %d", n, want)
+}
+
+func TestNotifyIPChangeEmailSendsOncePerChange(t *testing.T) {
+	dir := t.TempDir()
+	withConfigPath(t, filepath.Join(dir, "config.yaml"))
+	defer resetEmailStateForTest()
+
+	srv := newSMTPTestServer(t, false)
+	conf := &Config{Lang: "zh", Email: Email{
+		Enable:   true,
+		SMTPHost: "127.0.0.1",
+		SMTPPort: srv.port(),
+		From:     "ddns-go <test@example.com>",
+		To:       "alice@example.com",
+		Encrypt:  "none",
+		OnStart:  true,
+	}}
+	status := FetchStatus{IPv4Expected: true, IPv4OK: true}
+
+	NotifyIPChangeEmail(conf, "1.2.3.4", "", status)
+	waitForMessages(t, srv, 1)
+
+	// IP 未变，静默
+	NotifyIPChangeEmail(conf, "1.2.3.4", "", status)
+	time.Sleep(100 * time.Millisecond)
+	if n, _ := srv.stats(); n != 1 {
+		t.Fatalf("unchanged IP sent %d messages, want 1", n)
+	}
+
+	// IP 变化，只发一封
+	NotifyIPChangeEmail(conf, "5.6.7.8", "", status)
+	waitForMessages(t, srv, 2)
+	time.Sleep(100 * time.Millisecond)
+	n, mailFrom := srv.stats()
+	if n != 2 {
+		t.Fatalf("got %d messages, want 2", n)
+	}
+	if len(mailFrom) != 2 || mailFrom[0] != "MAIL FROM:<test@example.com>" {
+		t.Fatalf("unexpected MAIL FROM: %v", mailFrom)
+	}
+}
+
+func TestHandleFetchHealthRetriesRecovery(t *testing.T) {
+	dir := t.TempDir()
+	withConfigPath(t, filepath.Join(dir, "config.yaml"))
+	defer resetEmailStateForTest()
+	defer func() {
+		fetchTrackLock.Lock()
+		fetchTracker = fetchFailureTracker{}
+		fetchTrackLock.Unlock()
+	}()
+
+	srv := newSMTPTestServer(t, true)
+	conf := &Config{Lang: "zh", Email: Email{
+		Enable:              true,
+		SMTPHost:            "127.0.0.1",
+		SMTPPort:            srv.port(),
+		From:                "a@example.com",
+		To:                  "b@example.com",
+		Encrypt:             "none",
+		AlertOnFetchFailure: true,
+	}}
+	status := FetchStatus{IPv4Expected: true, IPv4OK: true}
+
+	fetchTrackLock.Lock()
+	fetchTracker = fetchFailureTracker{consecutive: fetchAlertThreshold, alerted: true}
+	fetchTrackLock.Unlock()
+
+	if got := handleFetchHealth(conf, status, "1.2.3.4", ""); got {
+		t.Fatal("first recovery send should fail")
+	}
+	fetchTrackLock.Lock()
+	pending := fetchTracker.alerted
+	fetchTrackLock.Unlock()
+	if !pending {
+		t.Fatal("failed recovery must keep alerted=true for retry")
+	}
+
+	if got := handleFetchHealth(conf, status, "1.2.3.4", ""); !got {
+		t.Fatal("second recovery send should succeed")
+	}
+	waitForMessages(t, srv, 1)
 }
 
 // --- 多源 fallback ---

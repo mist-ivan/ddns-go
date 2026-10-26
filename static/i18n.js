@@ -185,8 +185,8 @@ const I18N_MAP = {
     'zh-cn': 'SMTP 服务器'
   },
   'EmailSMTPHelp': {
-    'en': 'Example: smtp.qq.com:465. For QQ/163 mailboxes use the authorization code, not the login password.',
-    'zh-cn': '例如 smtp.qq.com:465。QQ/163 邮箱请填写「授权码」而不是登录密码。'
+    'en': 'Host only, e.g. smtp.qq.com; put the port in the box on the right. For QQ/163 mailboxes use the authorization code, not the login password.',
+    'zh-cn': '只填主机名，如 smtp.qq.com；端口填在右侧输入框。QQ/163 邮箱请填写「授权码」而不是登录密码。'
   },
   'Encryption': {
     'en': 'Encryption',

@@ -27,10 +27,17 @@ func EmailTest(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 
+	port, err := parseSMTPPort(data.SMTPPort)
+	if err != nil {
+		util.Log("邮件测试失败: %s", err)
+		emailTestResult(writer, false, err.Error())
+		return
+	}
+
 	email := config.Email{
 		Enable:   true,
 		SMTPHost: strings.TrimSpace(data.SMTPHost),
-		SMTPPort: parseSMTPPort(data.SMTPPort),
+		SMTPPort: port,
 		Username: strings.TrimSpace(data.Username),
 		Password: data.Password,
 		From:     strings.TrimSpace(data.From),

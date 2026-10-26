@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -71,7 +72,16 @@ func checkAndSave(request *http.Request) string {
 	// 邮件通知
 	conf.Email.Enable = data.EmailEnable
 	conf.Email.SMTPHost = strings.TrimSpace(data.EmailSMTPHost)
-	conf.Email.SMTPPort = parseSMTPPort(data.EmailSMTPPort)
+	if data.EmailEnable || strings.TrimSpace(data.EmailSMTPPort) != "" {
+		port, portErr := parseSMTPPort(data.EmailSMTPPort)
+		if portErr != nil {
+			if data.EmailEnable {
+				return util.LogStr("邮件通知配置错误: %s", portErr.Error())
+			}
+		} else {
+			conf.Email.SMTPPort = port
+		}
+	}
 	conf.Email.Username = strings.TrimSpace(data.EmailUsername)
 	// 密码留空表示保持原值，避免前端回显明文
 	if data.EmailPassword != "" {
@@ -82,6 +92,11 @@ func checkAndSave(request *http.Request) string {
 	conf.Email.Encrypt = strings.TrimSpace(data.EmailEncrypt)
 	conf.Email.OnStart = data.EmailOnStart
 	conf.Email.AlertOnFetchFailure = data.EmailAlertOnFetch
+	if data.EmailEnable {
+		if err := conf.Email.Validate(); err != nil {
+			return util.LogStr("邮件通知配置错误: %s", err.Error())
+		}
+	}
 
 	// 如果新密码不为空则检查是否够强, 内/外网要求强度不同
 	conf.Username = usernameNew
@@ -161,11 +176,15 @@ func checkAndSave(request *http.Request) string {
 	return "ok"
 }
 
-// parseSMTPPort 解析端口，非法值回落到 465
-func parseSMTPPort(raw string) int {
-	port, err := strconv.Atoi(strings.TrimSpace(raw))
-	if err != nil || port <= 0 || port > 65535 {
-		return 465
+// parseSMTPPort 解析端口；留空按 465，非法值返回错误（不再静默改成 465）
+func parseSMTPPort(raw string) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 465, nil
 	}
-	return port
+	port, err := strconv.Atoi(raw)
+	if err != nil || port < 1 || port > 65535 {
+		return 0, fmt.Errorf("SMTP 端口不合法: %s", raw)
+	}
+	return port, nil
 }

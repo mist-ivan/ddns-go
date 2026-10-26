@@ -3,8 +3,8 @@
 基于 [jeessy2/ddns-go](https://github.com/jeessy2/ddns-go) **v6.17.7**（commit `7aad574`）的定制分支，
 新增「公网 IP 变更时发送邮件提醒」功能。其余行为与原版一致。
 
-- 源码：`/home/mist/work/ddns-go`（分支 `master`，提交 `0ea105f`）
-- 镜像：`ddns-go-email:6.17.7-email-0.2`（约 40 MB，多阶段构建）
+- 源码：`/home/mist/work/ddns-go`（分支 `main`，以仓库当前 HEAD 为准）
+- 镜像：`ddns-go-email:6.17.7-email-0.3`（约 40 MB，多阶段构建）
 - 测试：`/home/mist/work/test`（假 SMTP + 假回调，可随时重跑）
 
 ## 与原版的差异
@@ -27,19 +27,23 @@
 1. 每轮检测后，把本轮 IPv4/IPv6 与「上次成功通知的 IP」比较。
 2. **只有真正变化时才发信**；IP 未变的轮次完全静默。
 3. 首次运行（无历史记录）：
-   - `onstart: true`（默认）→ 发一封基线邮件；
-   - `onstart: false` → 只记录基线，不发信。
-4. 发送失败时**不更新状态**，下一轮自动重试，不会丢事件。
+   - `onstart: false`（默认）→ 只记录基线，不发信；
+   - `onstart: true` → 发一封基线邮件。
+4. 发送失败时**不更新状态**，下一轮自动重试，不会丢事件；
+   但只有认证机制不被接受时才回退 `AUTH LOGIN`，且 `DATA` 已被接收后 `QUIT` 失败不会重发。
 5. 某一轮取不到地址（瞬时失败）时，该地址不参与比对，也不会覆盖历史值，避免"掉线"被误报成"IP 变更"。
 6. 临时/已弃用的 IPv6（SLAAC 隐私地址）会被忽略，不会因为地址按小时轮换而反复发信。
 7. 状态文件与配置文件同目录：`<配置文件路径>.email-state.json`，随挂载卷持久化；
    写入采用「临时文件 + rename」原子替换，写盘失败时自动降级到内存状态，**不会重复轰炸**。
-8. SMTP 会话有 45 秒硬超时，服务器半死时不会把 DNS 更新主循环一起拖住。
+8. 单次 SMTP 会话有 45 秒硬超时，服务器半死时不会把 DNS 更新主循环一起拖住；
+   认证失败回退 LOGIN 时最多再建立一次会话。
 9. 开启「获取失败时告警」后，连续 3 轮取不到 IP 发一封告警，恢复后再发一封恢复通知；
-   同一次故障只告警一次，恢复后的那一轮不会重复发基线邮件。
+   同一次故障只告警一次，恢复通知失败会保留待发送状态并在下一轮重试。
 10. 每次成功通知都会追加一条历史记录：`<配置文件路径>.email-history.jsonl`（最多保留 200 条），
-    网页「历史记录」区块展示上次通知时间、累计条数和最近 5 条。
+    网页「历史记录」区块展示上次通知时间、当前保留条数和最近 5 条。
 11. 邮件通知与原有 Webhook 相互独立，可同时开启。
+12. 后台 `RunOnce` 已串行化，保存配置触发的立即执行不会与定时器并发重复发信。
+13. `From`/`To` 支持 `Name <addr@example.com>` 显示名；SMTP 信封会自动使用裸地址。
 
 ## 检测间隔
 
@@ -59,7 +63,7 @@ fork 版把默认检测间隔从 300 秒改为 **600 秒（10 分钟）**：
 ```bash
 docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.2 -l :9876 -f 120
+  ddns-go-email:6.17.7-email-0.3 -l :9876 -f 120
 ```
 
 ## 配置字段
@@ -88,13 +92,15 @@ email:
 | 587 | `starttls` | 明文连接后升级 TLS |
 | 25 | `none` | 不加密（仅内网/本地测试）|
 
-`encrypt` 留空时按端口自动推断。认证先尝试 `AUTH PLAIN`，失败自动回退 `AUTH LOGIN`（兼容只支持 LOGIN 的服务商）。
+`encrypt` 留空时按端口自动推断；网页上切换端口会自动带出常用值。
+认证先尝试 `AUTH PLAIN`，**只有认证阶段失败**才回退 `AUTH LOGIN`。
+`none` + 非 localhost + 配置了 SMTP 账号时，程序会直接拒绝发送，避免密码明文上网；如确需内网明文认证，请自行改代码或使用 localhost 转发。
 
 ## 构建
 
 ```bash
 cd /home/mist/work/ddns-go
-sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.2 .
+sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.3 .
 ```
 
 ## 运行
@@ -103,7 +109,7 @@ sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.2 .
 sudo docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 \
   -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.2
+  ddns-go-email:6.17.7-email-0.3
 ```
 
 打开 `http://<主机IP>:9876`，配置 DNS 与邮件通知后保存即可。
@@ -128,12 +134,33 @@ python3 /home/mist/work/test/verify_mail.py
 
 ## 更新记录
 
+### 6.17.7-email-0.3
+
+| 修复 | 说明 |
+|---|---|
+| **后台登录用户名被覆盖** | 设置页 `Username` 输入框误绑 `{{.Email.Username}}`，保存时会把管理员用户名改成 SMTP 用户名，甚至锁死后台。已改回 `{{.Username}}` 并加回归测试 |
+| **`From` 显示名导致 501** | `ddns-go <you@qq.com>` 原样进 `MAIL FROM`，真实 SMTP 返回 501。现在用 `mail.ParseAddress` 拆成“信封裸地址 + 邮件头显示名”，`To` 同时支持显示名、逗号/分号/换行 |
+| **QUIT 失败导致重复投递** | `DATA` 返回 250 即视为已投递；`QUIT` 错误只记日志，不再重发整封邮件 |
+| **错误重试放大** | 只有认证阶段失败才回退 `AUTH LOGIN`；`MAIL FROM`/`RCPT`/`DATA`/网络错误不再重发 |
+| **明文发送 SMTP 凭据** | `encrypt: none` + 非 localhost + 账号时直接拒绝，不再回退 LOGIN 把密码 base64 发出去 |
+| **恢复通知丢失** | 恢复邮件发送失败时保留 `alerted` 状态，下一轮健康时继续重试 |
+| **并发重复发信** | `dns.RunOnce()` 加串行锁，保存配置触发的立即执行不会与定时器重叠 |
+| **IPv6 误告警** | 只有“启用且配置了域名”的地址族才算期望；告警文案区分 IPv4/IPv6 |
+| **IPv6 变更标题错误** | 标题按实际变化的地址族生成，不再出现 `- -> -` 或 `1.1.1.1 -> 1.1.1.1` |
+| **端口/加密配错** | 端口变化自动带出 465→ssl、587→starttls、25→none；非法端口不再静默改成 465；保存时校验地址、加密方式和 `host:port` 误填 |
+| **文档** | 修正 `onstart` 默认值、45 秒超时、累计条数、源码分支等过期描述 |
+
+新增测试：`TestParseRecipients`、`TestParseRecipientsWithDisplayName`、
+`TestParseSenderKeepsDisplayNameForHeader`、`TestSendUsesBareEnvelopeAndDoesNotRetryAfterQuit`、
+`TestNotifyIPChangeEmailSendsOncePerChange`、`TestHandleFetchHealthRetriesRecovery`、
+`TestComposeIPChangeMailIPv6Only`，以及 Web 页面“管理员用户名不被 SMTP 用户名覆盖”的回归断言。
+
 ### 6.17.7-email-0.2
 
 | 改动 | 说明 |
 |---|---|
 | **修复多源 IP 探测的 fallback** | 原版在「接口返回 200 但内容里没有 IP」「读响应体失败」这两条路径上会直接 `return`，导致配置在后面的备用接口永远不会被尝试。现在只有真正解析出地址才算成功，否则继续试下一个接口（IPv4/IPv6 都修了） |
-| **新增 IP 变更历史** | 每次成功通知追加一行到 `<配置>.email-history.jsonl`，最多保留 200 条；网页「历史记录」区块展示上次通知时间、累计条数与最近 5 条 |
+| **新增 IP 变更历史** | 每次成功通知追加一行到 `<配置>.email-history.jsonl`，最多保留 200 条；网页「历史记录」区块展示上次通知时间、当前保留条数与最近 5 条 |
 | **新增获取失败告警（可开关）** | 连续 3 轮取不到公网 IP 时发一封告警，恢复后再发一封恢复通知；同一次故障只告警一次，恢复轮不重复发基线邮件 |
 
 配套改进：日志里输出接口响应体时会截断到 120 个字符，避免把整页 HTML 写进日志。
@@ -175,8 +202,9 @@ python3 /home/mist/work/test/verify_mail.py
 
 - 邮件正文为 `text/plain`，未做 HTML 模板。
 - 未做发送限流：若公网 IPv4 在短时间内反复横跳，仍会按变化次数各发一封。
-- 纯 IPv6 场景下邮件标题会显示 `- -> -`（标题固定用 IPv4 拼接），正文信息完整；待后续修复。
+- 恢复轮如果同时发生 IP 变化，仍可能收到“已恢复”和“IP 变更”两封邮件；两封内容都带当前 IP。
 - 状态是全局的（一份配置对应一个 IP 基线）；若配置了多个差异很大的 IP 来源，会合并成一条记录。
+- SMTP 密码/授权码与 DNS Secret 一样，以明文保存在 0600 的配置文件里；备份/迁移时注意保护。
 - 未接入原版的 Webhook 变量体系（`#{ipv4Addr}` 等），邮件正文格式由本分支固定。
 - IPv6 过滤依赖 `/proc/net/if_inet6`；若 IPv6 来自远程 URL（容器内看不到该地址），无法判断临时标志，此时不做过滤。
 - 「获取失败」计数器只在内存里，容器重启后重新累计；历史文件记录的是**成功发出**的通知，失败的尝试只在日志里。

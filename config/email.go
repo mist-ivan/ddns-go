@@ -10,6 +10,7 @@ import (
 	"io"
 	"mime"
 	"net"
+	"net/mail"
 	"net/smtp"
 	"os"
 	"sort"
@@ -43,6 +44,42 @@ type Email struct {
 	OnStart bool
 	// AlertOnFetchFailure 连续多轮取不到公网 IP 时发送告警邮件
 	AlertOnFetchFailure bool
+}
+
+// FetchStatus 本轮公网 IP 的期望与获取结果。
+// 分开记录 IPv4/IPv6，避免“只启用/只配置了一族”时误报整个公网 IP 获取失败。
+type FetchStatus struct {
+	IPv4Expected bool
+	IPv4OK       bool
+	IPv6Expected bool
+	IPv6OK       bool
+}
+
+// Failed 是否至少有一个已配置的地址族在本轮获取失败
+func (s FetchStatus) Failed() bool {
+	return (s.IPv4Expected && !s.IPv4OK) || (s.IPv6Expected && !s.IPv6OK)
+}
+
+func (s FetchStatus) failedFamilies() []string {
+	var out []string
+	if s.IPv4Expected && !s.IPv4OK {
+		out = append(out, "IPv4")
+	}
+	if s.IPv6Expected && !s.IPv6OK {
+		out = append(out, "IPv6")
+	}
+	return out
+}
+
+func (s FetchStatus) expectedFamilies() []string {
+	var out []string
+	if s.IPv4Expected {
+		out = append(out, "IPv4")
+	}
+	if s.IPv6Expected {
+		out = append(out, "IPv6")
+	}
+	return out
 }
 
 // smtpSessionTimeout 单次 SMTP 会话的总超时（从连接建立起算到会话结束）
@@ -80,16 +117,129 @@ func (a *loginAuth) Next(fromServer []byte, more bool) ([]byte, error) {
 	}
 }
 
+// smtpAuthError 标记“认证阶段”的错误，只有这类错误才值得换一种 AUTH 机制重试。
+type smtpAuthError struct {
+	err error
+}
+
+func (e *smtpAuthError) Error() string { return e.err.Error() }
+func (e *smtpAuthError) Unwrap() error { return e.err }
+
+func isAuthError(err error) bool {
+	var authErr *smtpAuthError
+	return errors.As(err, &authErr)
+}
+
+// normalizeSMTPHost 去掉 IPv6 字面量外层的方括号，便于 JoinHostPort/证书校验。
+func normalizeSMTPHost(raw string) string {
+	host := strings.TrimSpace(raw)
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		return strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	}
+	return host
+}
+
+// normalizeEncrypt 校验/推断加密方式。留空时按端口推断。
+func normalizeEncrypt(raw string, port int) (string, error) {
+	encrypt := strings.ToLower(strings.TrimSpace(raw))
+	if encrypt == "" {
+		switch port {
+		case 465:
+			encrypt = "ssl"
+		case 587:
+			encrypt = "starttls"
+		default:
+			encrypt = "none"
+		}
+	}
+	switch encrypt {
+	case "ssl", "tls", "starttls", "none":
+		return encrypt, nil
+	default:
+		return "", fmt.Errorf("不支持的加密方式: %s", raw)
+	}
+}
+
+// isLocalhost 判断 SMTP 主机是否为本机；只有本机明文连接才允许携带凭据（便于本地测试）。
+func isLocalhost(host string) bool {
+	h := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if h == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(strings.Trim(h, "[]")); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
+// parseSender 解析发件人，返回 SMTP 信封地址（裸地址）和邮件头显示值。
+func parseSender(raw string) (envelope, header string, err error) {
+	addr, err := mail.ParseAddress(strings.TrimSpace(raw))
+	if err != nil {
+		return "", "", fmt.Errorf("发件人地址不合法: %w", err)
+	}
+	return addr.Address, addr.String(), nil
+}
+
+// parseRecipients 解析收件人，兼容逗号、分号、换行分隔以及带显示名的地址。
+func parseRecipients(raw string) ([]*mail.Address, error) {
+	normalized := strings.NewReplacer("\r\n", ",", "\r", ",", "\n", ",", ";", ",").Replace(raw)
+	normalized = strings.TrimSpace(normalized)
+	for strings.Contains(normalized, ",,") {
+		normalized = strings.ReplaceAll(normalized, ",,", ",")
+	}
+	normalized = strings.Trim(normalized, " \t,")
+	if normalized == "" {
+		return nil, errors.New("收件人不能为空")
+	}
+	list, err := mail.ParseAddressList(normalized)
+	if err != nil {
+		return nil, fmt.Errorf("收件人地址不合法: %w", err)
+	}
+	if len(list) == 0 {
+		return nil, errors.New("收件人不能为空")
+	}
+	return list, nil
+}
+
 // Validate 检查配置是否足以发信
 func (e *Email) Validate() error {
-	if strings.TrimSpace(e.SMTPHost) == "" {
+	host := normalizeSMTPHost(e.SMTPHost)
+	if host == "" {
 		return errors.New("SMTP 服务器不能为空")
 	}
-	if len(splitRecipients(e.To)) == 0 {
-		return errors.New("收件人不能为空")
+	if strings.ContainsAny(host, " \t\r\n") {
+		return errors.New("SMTP 服务器不能包含空白字符")
 	}
-	if strings.TrimSpace(e.From) == "" && strings.TrimSpace(e.Username) == "" {
+	// 常见误填：把 host:port 整体填进“服务器”输入框
+	if strings.Count(host, ":") == 1 {
+		if _, _, err := net.SplitHostPort(host); err == nil {
+			return errors.New("SMTP 服务器只填主机名，端口请填在端口输入框")
+		}
+	}
+	if e.SMTPPort < 0 || e.SMTPPort > 65535 {
+		return fmt.Errorf("SMTP 端口不合法: %d", e.SMTPPort)
+	}
+	port := e.SMTPPort
+	if port == 0 {
+		port = 465
+	}
+	if _, err := normalizeEncrypt(e.Encrypt, port); err != nil {
+		return err
+	}
+
+	from := strings.TrimSpace(e.From)
+	if from == "" {
+		from = strings.TrimSpace(e.Username)
+	}
+	if from == "" {
 		return errors.New("发件人不能为空")
+	}
+	if _, _, err := parseSender(from); err != nil {
+		return err
+	}
+	if _, err := parseRecipients(e.To); err != nil {
+		return err
 	}
 	return nil
 }
@@ -100,114 +250,126 @@ func (e *Email) Send(subject, body string) error {
 		return err
 	}
 
-	host := strings.TrimSpace(e.SMTPHost)
+	host := normalizeSMTPHost(e.SMTPHost)
 	port := e.SMTPPort
 	if port <= 0 {
 		port = 465
 	}
-	from := strings.TrimSpace(e.From)
-	if from == "" {
-		from = strings.TrimSpace(e.Username)
+	encrypt, err := normalizeEncrypt(e.Encrypt, port)
+	if err != nil {
+		return err
 	}
-	to := splitRecipients(e.To)
-	msg := buildMailMessage(from, to, subject, body)
+
+	fromRaw := strings.TrimSpace(e.From)
+	if fromRaw == "" {
+		fromRaw = strings.TrimSpace(e.Username)
+	}
+	envelopeFrom, headerFrom, err := parseSender(fromRaw)
+	if err != nil {
+		return err
+	}
+	toAddrs, err := parseRecipients(e.To)
+	if err != nil {
+		return err
+	}
+	envelopeTo := make([]string, 0, len(toAddrs))
+	headerTo := make([]string, 0, len(toAddrs))
+	for _, addr := range toAddrs {
+		envelopeTo = append(envelopeTo, addr.Address)
+		headerTo = append(headerTo, addr.String())
+	}
+
+	msg := buildMailMessage(headerFrom, headerTo, subject, body)
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 
 	var auth smtp.Auth
 	if e.Username != "" {
+		if encrypt == "none" && !isLocalhost(host) {
+			return errors.New("拒绝在未加密的 SMTP 连接上发送账号密码，请改用 SSL 或 STARTTLS")
+		}
 		auth = smtp.PlainAuth("", e.Username, e.Password, host)
 	}
 
-	err := e.deliver(addr, host, port, auth, from, to, msg)
-	if err != nil && auth != nil {
-		// 部分服务商不支持 AUTH PLAIN，回退到 AUTH LOGIN 再试一次
-		util.Log("邮件发送失败，尝试使用 LOGIN 方式重试: %s", err)
-		err = e.deliver(addr, host, port, &loginAuth{e.Username, e.Password}, from, to, msg)
+	accepted, err := e.deliver(addr, host, encrypt, auth, envelopeFrom, envelopeTo, msg)
+	if err != nil && !accepted && auth != nil && isAuthError(err) {
+		// 仅认证机制不被接受时回退 AUTH LOGIN；其他错误不重发，避免重复投递。
+		util.Log("SMTP AUTH PLAIN 失败，尝试使用 LOGIN 方式重试: %s", err)
+		_, err = e.deliver(addr, host, encrypt, &loginAuth{e.Username, e.Password}, envelopeFrom, envelopeTo, msg)
 	}
 	return err
 }
 
-// deliver 建立一次 SMTP 会话并投递
-func (e *Email) deliver(addr, host string, port int, auth smtp.Auth, from string, to []string, msg []byte) error {
-	encrypt := strings.ToLower(strings.TrimSpace(e.Encrypt))
-	if encrypt == "" {
-		// 未显式配置时按端口推断
-		switch port {
-		case 465:
-			encrypt = "ssl"
-		case 587:
-			encrypt = "starttls"
-		default:
-			encrypt = "none"
-		}
-	}
-
+// deliver 建立一次 SMTP 会话并投递。
+// accepted 表示服务器已对 DATA 内容返回 250（邮件已接收）；此后即使 QUIT 失败也不应重发。
+func (e *Email) deliver(addr, host, encrypt string, auth smtp.Auth, from string, to []string, msg []byte) (accepted bool, err error) {
 	dialer := &net.Dialer{Timeout: 15 * time.Second}
-	var (
-		conn net.Conn
-		err  error
-	)
+	var conn net.Conn
 	if encrypt == "ssl" || encrypt == "tls" {
 		conn, err = tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{ServerName: host})
 	} else {
 		conn, err = dialer.Dial("tcp", addr)
 	}
 	if err != nil {
-		return fmt.Errorf("连接 SMTP 服务器失败: %w", err)
+		return false, fmt.Errorf("连接 SMTP 服务器失败: %w", err)
 	}
 	defer conn.Close()
 
-	// 整段会话必须有硬超时：SMTP 服务器半死时，读写会无限阻塞，
-	// 而本函数是在 DNS 更新循环里同步调用的，不能把主循环一起拖死。
+	// 单次会话硬超时：SMTP 服务器半死时读写不能无限阻塞主循环。
 	_ = conn.SetDeadline(time.Now().Add(smtpSessionTimeout))
 
 	client, err := smtp.NewClient(conn, host)
 	if err != nil {
-		return fmt.Errorf("初始化 SMTP 会话失败: %w", err)
+		return false, fmt.Errorf("初始化 SMTP 会话失败: %w", err)
 	}
 	defer client.Close()
 
 	if encrypt == "starttls" {
 		if ok, _ := client.Extension("STARTTLS"); !ok {
-			return errors.New("SMTP 服务器不支持 STARTTLS")
+			return false, errors.New("SMTP 服务器不支持 STARTTLS")
 		}
 		if err = client.StartTLS(&tls.Config{ServerName: host}); err != nil {
-			return fmt.Errorf("STARTTLS 失败: %w", err)
+			return false, fmt.Errorf("STARTTLS 失败: %w", err)
 		}
 	}
 
 	if auth != nil {
 		if ok, _ := client.Extension("AUTH"); ok {
 			if err = client.Auth(auth); err != nil {
-				return fmt.Errorf("SMTP 认证失败: %w", err)
+				return false, &smtpAuthError{err: err}
 			}
 		}
 	}
 
 	if err = client.Mail(from); err != nil {
-		return fmt.Errorf("MAIL FROM 被拒绝: %w", err)
+		return false, fmt.Errorf("MAIL FROM 被拒绝: %w", err)
 	}
 	for _, rcpt := range to {
 		if err = client.Rcpt(rcpt); err != nil {
-			return fmt.Errorf("RCPT TO(%s) 被拒绝: %w", rcpt, err)
+			return false, fmt.Errorf("RCPT TO(%s) 被拒绝: %w", rcpt, err)
 		}
 	}
 	w, err := client.Data()
 	if err != nil {
-		return fmt.Errorf("DATA 被拒绝: %w", err)
+		return false, fmt.Errorf("DATA 被拒绝: %w", err)
 	}
 	if _, err = w.Write(msg); err != nil {
-		return fmt.Errorf("写入邮件内容失败: %w", err)
+		return false, fmt.Errorf("写入邮件内容失败: %w", err)
 	}
 	if err = w.Close(); err != nil {
-		return fmt.Errorf("提交邮件内容失败: %w", err)
+		return false, fmt.Errorf("提交邮件内容失败: %w", err)
 	}
-	return client.Quit()
+	accepted = true
+
+	if err = client.Quit(); err != nil {
+		// 邮件已被服务器接收，QUIT 只是关闭会话；不能判为发送失败，否则会重复投递。
+		util.Log("邮件已投递，关闭 SMTP 会话时出错（忽略）: %s", err)
+	}
+	return true, nil
 }
 
 // NotifyIPChangeEmail 当公网 IP 与上次通知过的 IP 不同时发信。
 // 首次运行（没有历史记录）时，若开启 OnStart 则发送一封基线邮件。
-func NotifyIPChangeEmail(conf *Config, ipv4, ipv6 string, fetchFailed bool) {
+func NotifyIPChangeEmail(conf *Config, ipv4, ipv6 string, fetchStatus FetchStatus) {
 	if conf == nil || !conf.Email.Enable {
 		return
 	}
@@ -224,7 +386,7 @@ func NotifyIPChangeEmail(conf *Config, ipv4, ipv6 string, fetchFailed bool) {
 	}
 
 	// 取 IP 失败的告警独立于变更通知：即使本轮一个地址都没拿到，也要能报出去
-	recoveredNotice := handleFetchHealth(conf, fetchFailed, ipv4, ipv6)
+	recoveredNotice := handleFetchHealth(conf, fetchStatus, ipv4, ipv6)
 
 	if ipv4 == "" && ipv6 == "" {
 		return
@@ -327,7 +489,7 @@ var (
 
 // handleFetchHealth 处理"取不到公网 IP"的告警与恢复通知。
 // 返回值表示本轮是否成功发出了"已恢复"通知（调用方据此避免重复发基线邮件）。
-func handleFetchHealth(conf *Config, failed bool, ipv4, ipv6 string) bool {
+func handleFetchHealth(conf *Config, status FetchStatus, ipv4, ipv6 string) bool {
 	if !conf.Email.AlertOnFetchFailure {
 		fetchTrackLock.Lock()
 		fetchTracker = fetchFailureTracker{}
@@ -336,12 +498,12 @@ func handleFetchHealth(conf *Config, failed bool, ipv4, ipv6 string) bool {
 	}
 
 	fetchTrackLock.Lock()
-	alert, recovered := fetchTracker.observe(failed)
+	alert, recovered := fetchTracker.observe(status.Failed())
 	consecutive := fetchTracker.consecutive
 	fetchTrackLock.Unlock()
 
 	if alert {
-		subject, body := composeFetchAlertMail(conf, consecutive)
+		subject, body := composeFetchAlertMail(conf, consecutive, status)
 		if err := conf.Email.Send(subject, body); err != nil {
 			util.Log("邮件通知: IP 获取失败告警发送失败: %s", err)
 			// 允许下一轮重试，避免一次发送失败就把告警吞掉
@@ -355,9 +517,15 @@ func handleFetchHealth(conf *Config, failed bool, ipv4, ipv6 string) bool {
 	}
 
 	if recovered {
-		subject, body := composeRecoveredMail(conf, ipv4, ipv6)
+		subject, body := composeRecoveredMail(conf, status, ipv4, ipv6)
 		if err := conf.Email.Send(subject, body); err != nil {
 			util.Log("邮件通知: IP 获取恢复通知发送失败: %s", err)
+			// observe(false) 刚刚清掉了 alerted；这里必须还原，
+			// 否则下一轮健康时不会再触发恢复通知，通知就永久丢失了。
+			fetchTrackLock.Lock()
+			fetchTracker.alerted = true
+			fetchTracker.consecutive = 0
+			fetchTrackLock.Unlock()
 			return false
 		}
 		AppendEmailHistory(EmailHistoryEntry{Kind: historyKindRecovered, IPv4: ipv4, IPv6: ipv6})
@@ -369,51 +537,60 @@ func handleFetchHealth(conf *Config, failed bool, ipv4, ipv6 string) bool {
 }
 
 // composeFetchAlertMail 生成"取不到 IP"的告警邮件
-func composeFetchAlertMail(conf *Config, consecutive int) (subject, body string) {
+func composeFetchAlertMail(conf *Config, consecutive int, status FetchStatus) (subject, body string) {
 	zh := strings.HasPrefix(strings.ToLower(conf.Lang), "zh")
 	now := time.Now().Format("2006-01-02 15:04:05 -07:00")
 	hostname, _ := os.Hostname()
 	state := loadEmailState()
+	families := status.failedFamilies()
+	familyText := strings.Join(families, " / ")
+	if familyText == "" {
+		familyText = "公网 IP"
+	}
 
 	var b strings.Builder
 	if zh {
-		subject = fmt.Sprintf("[ddns-go] 连续 %d 轮未能获取公网 IP", consecutive)
-		fmt.Fprintf(&b, "ddns-go 已连续 %d 轮未能检测到公网 IP，域名解析可能已经停止更新。\n\n", consecutive)
+		subject = fmt.Sprintf("[ddns-go] 连续 %d 轮未能获取 %s 地址", consecutive, familyText)
+		fmt.Fprintf(&b, "ddns-go 已连续 %d 轮未能检测到 %s 地址，相关域名解析可能已经停止更新。\n\n", consecutive, familyText)
 		fmt.Fprintf(&b, "时间: %s\n", now)
 		fmt.Fprintf(&b, "主机: %s\n", hostname)
 		fmt.Fprintf(&b, "最后已知 IPv4: %s\n", displayOrDash(state.LastIPv4))
 		fmt.Fprintf(&b, "最后已知 IPv6: %s\n", displayOrDash(state.LastIPv6))
-		b.WriteString("\n请检查容器网络、IP 查询接口是否可访问。恢复之后会再发一封通知。\n")
+		fmt.Fprintf(&b, "\n请检查容器网络、%s 的 IP 查询接口是否可访问。恢复之后会再发一封通知。\n", familyText)
 	} else {
-		subject = fmt.Sprintf("[ddns-go] Failed to detect public IP for %d rounds", consecutive)
-		fmt.Fprintf(&b, "ddns-go has failed to detect the public IP for %d consecutive rounds; DNS records may be stale.\n\n", consecutive)
+		subject = fmt.Sprintf("[ddns-go] Failed to detect %s address for %d rounds", familyText, consecutive)
+		fmt.Fprintf(&b, "ddns-go has failed to detect the %s address for %d consecutive rounds; related DNS records may be stale.\n\n", familyText, consecutive)
 		fmt.Fprintf(&b, "Time: %s\n", now)
 		fmt.Fprintf(&b, "Host: %s\n", hostname)
 		fmt.Fprintf(&b, "Last known IPv4: %s\n", displayOrDash(state.LastIPv4))
 		fmt.Fprintf(&b, "Last known IPv6: %s\n", displayOrDash(state.LastIPv6))
-		b.WriteString("\nCheck the container network and whether the IP lookup endpoints are reachable. A recovery notice will follow.\n")
+		fmt.Fprintf(&b, "\nCheck the container network and whether the %s IP lookup endpoints are reachable. A recovery notice will follow.\n", familyText)
 	}
 	b.WriteString("\n-- \nddns-go email notification\n")
 	return subject, b.String()
 }
 
 // composeRecoveredMail 生成"已恢复"的邮件
-func composeRecoveredMail(conf *Config, ipv4, ipv6 string) (subject, body string) {
+func composeRecoveredMail(conf *Config, status FetchStatus, ipv4, ipv6 string) (subject, body string) {
 	zh := strings.HasPrefix(strings.ToLower(conf.Lang), "zh")
 	now := time.Now().Format("2006-01-02 15:04:05 -07:00")
 	hostname, _ := os.Hostname()
+	familyText := strings.Join(status.expectedFamilies(), " / ")
+	if familyText == "" {
+		familyText = "公网 IP"
+	}
 
 	var b strings.Builder
 	if zh {
-		subject = "[ddns-go] 公网 IP 检测已恢复"
-		b.WriteString("ddns-go 已重新拿到公网 IP，检测恢复正常。\n\n")
+		subject = fmt.Sprintf("[ddns-go] %s 检测已恢复", familyText)
+		fmt.Fprintf(&b, "ddns-go 已重新拿到 %s 地址，检测恢复正常。\n\n", familyText)
 		fmt.Fprintf(&b, "时间: %s\n", now)
 		fmt.Fprintf(&b, "主机: %s\n", hostname)
 		fmt.Fprintf(&b, "当前 IPv4: %s\n", displayOrDash(ipv4))
 		fmt.Fprintf(&b, "当前 IPv6: %s\n", displayOrDash(ipv6))
 	} else {
-		subject = "[ddns-go] Public IP detection recovered"
-		b.WriteString("ddns-go can detect the public IP again.\n\n")
+		subject = fmt.Sprintf("[ddns-go] %s detection recovered", familyText)
+		fmt.Fprintf(&b, "ddns-go can detect the %s address again.\n\n", familyText)
 		fmt.Fprintf(&b, "Time: %s\n", now)
 		fmt.Fprintf(&b, "Host: %s\n", hostname)
 		fmt.Fprintf(&b, "IPv4: %s\n", displayOrDash(ipv4))
@@ -473,13 +650,31 @@ func composeIPChangeMail(conf *Config, state emailState, ipv4, ipv6 string, firs
 	now := time.Now().Format("2006-01-02 15:04:05 -07:00")
 	hostname, _ := os.Hostname()
 
+	v4Changed := ipv4 != "" && state.LastIPv4 != ipv4
+	v6Changed := ipv6 != "" && state.LastIPv6 != ipv6
+	firstIP := ipv4
+	if firstIP == "" {
+		firstIP = ipv6
+	}
+
 	var b strings.Builder
 	if zh {
 		if firstRun {
-			subject = fmt.Sprintf("[ddns-go] 启动基线: 当前 IP %s", displayOrDash(ipv4))
+			subject = fmt.Sprintf("[ddns-go] 启动基线: 当前 IP %s", displayOrDash(firstIP))
 			b.WriteString("ddns-go 已启动，这是首次记录的 IP 基线。\n\n")
 		} else {
-			subject = fmt.Sprintf("[ddns-go] IP 地址变更: %s -> %s", displayOrDash(state.LastIPv4), displayOrDash(ipv4))
+			switch {
+			case v4Changed && v6Changed:
+				subject = fmt.Sprintf("[ddns-go] IP 地址变更: %s -> %s / IPv6 %s -> %s",
+					displayOrDash(state.LastIPv4), displayOrDash(ipv4),
+					displayOrDash(state.LastIPv6), displayOrDash(ipv6))
+			case v6Changed:
+				subject = fmt.Sprintf("[ddns-go] IPv6 地址变更: %s -> %s",
+					displayOrDash(state.LastIPv6), displayOrDash(ipv6))
+			default:
+				subject = fmt.Sprintf("[ddns-go] IP 地址变更: %s -> %s",
+					displayOrDash(state.LastIPv4), displayOrDash(ipv4))
+			}
 			b.WriteString("ddns-go 检测到公网 IP 地址发生变化。\n\n")
 		}
 		fmt.Fprintf(&b, "时间: %s\n", now)
@@ -494,10 +689,21 @@ func composeIPChangeMail(conf *Config, state emailState, ipv4, ipv6 string, firs
 		}
 	} else {
 		if firstRun {
-			subject = fmt.Sprintf("[ddns-go] Baseline IP: %s", displayOrDash(ipv4))
+			subject = fmt.Sprintf("[ddns-go] Baseline IP: %s", displayOrDash(firstIP))
 			b.WriteString("ddns-go has started. This is the first recorded IP baseline.\n\n")
 		} else {
-			subject = fmt.Sprintf("[ddns-go] IP changed: %s -> %s", displayOrDash(state.LastIPv4), displayOrDash(ipv4))
+			switch {
+			case v4Changed && v6Changed:
+				subject = fmt.Sprintf("[ddns-go] IP changed: %s -> %s / IPv6 %s -> %s",
+					displayOrDash(state.LastIPv4), displayOrDash(ipv4),
+					displayOrDash(state.LastIPv6), displayOrDash(ipv6))
+			case v6Changed:
+				subject = fmt.Sprintf("[ddns-go] IPv6 changed: %s -> %s",
+					displayOrDash(state.LastIPv6), displayOrDash(ipv6))
+			default:
+				subject = fmt.Sprintf("[ddns-go] IP changed: %s -> %s",
+					displayOrDash(state.LastIPv4), displayOrDash(ipv4))
+			}
 			b.WriteString("ddns-go detected that the public IP address has changed.\n\n")
 		}
 		fmt.Fprintf(&b, "Time: %s\n", now)
@@ -548,20 +754,6 @@ func displayOrDash(s string) string {
 	return s
 }
 
-// splitRecipients 拆分收件人，支持逗号、分号和换行
-func splitRecipients(raw string) []string {
-	fields := strings.FieldsFunc(raw, func(r rune) bool {
-		return r == ',' || r == ';' || r == '\n' || r == '\r'
-	})
-	var out []string
-	for _, f := range fields {
-		if f = strings.TrimSpace(f); f != "" {
-			out = append(out, f)
-		}
-	}
-	return out
-}
-
 // buildMailMessage 构造 MIME 报文（正文 base64，避免中文与换行问题）
 func buildMailMessage(from string, to []string, subject, body string) []byte {
 	var b strings.Builder
@@ -604,8 +796,8 @@ func emailStatePath() string {
 }
 
 var (
-	// emailStateLock 同时保护内存态和日志去重标记，也顺带避免"保存配置触发的
-	// RunOnce"与定时器并发读写状态导致的重复发送
+	// emailStateLock 只保护内存态、状态文件和日志去重标记的单次读写；
+	// “读状态→发信→写状态”这一整段由 dns.RunOnce 的串行锁保证不并发。
 	emailStateLock sync.Mutex
 	// emailStateMem 是本次运行内的权威状态：即便落盘失败也不会重复提醒
 	emailStateMem   *emailState
