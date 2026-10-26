@@ -1,17 +1,21 @@
 package config
 
 import (
+	"bufio"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"mime"
 	"net"
 	"net/smtp"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jeessy2/ddns-go/v6/util"
@@ -38,6 +42,9 @@ type Email struct {
 	// OnStart 首次运行（没有历史 IP 记录）时也发送一封基线邮件
 	OnStart bool
 }
+
+// smtpSessionTimeout 单次 SMTP 会话的总超时（从连接建立起算到会话结束）
+var smtpSessionTimeout = 45 * time.Second
 
 // emailState 记录上次成功通知过的 IP，用于判断"IP 是否真的变了"
 type emailState struct {
@@ -148,6 +155,10 @@ func (e *Email) deliver(addr, host string, port int, auth smtp.Auth, from string
 	}
 	defer conn.Close()
 
+	// 整段会话必须有硬超时：SMTP 服务器半死时，读写会无限阻塞，
+	// 而本函数是在 DNS 更新循环里同步调用的，不能把主循环一起拖死。
+	_ = conn.SetDeadline(time.Now().Add(smtpSessionTimeout))
+
 	client, err := smtp.NewClient(conn, host)
 	if err != nil {
 		return fmt.Errorf("初始化 SMTP 会话失败: %w", err)
@@ -204,18 +215,41 @@ func NotifyIPChangeEmail(conf *Config, ipv4, ipv6 string) {
 
 	ipv4 = strings.TrimSpace(ipv4)
 	ipv6 = strings.TrimSpace(ipv6)
+	// 剔除临时/已弃用的 IPv6（SLAAC 隐私地址），它们会按小时级轮换，
+	// 若参与比对会造成大量无意义的变更邮件
+	if ipv6 != "" {
+		ipv6 = filterUnstableIPv6(ipv6)
+	}
 	if ipv4 == "" && ipv6 == "" {
 		return
 	}
 
 	state := loadEmailState()
 	firstRun := state.LastIPv4 == "" && state.LastIPv6 == ""
-	if state.LastIPv4 == ipv4 && state.LastIPv6 == ipv6 {
+
+	// 空值表示本轮没取到地址（可能是瞬时失败），不参与比对也不覆盖历史值
+	changed := false
+	if ipv4 != "" && state.LastIPv4 != ipv4 {
+		changed = true
+	}
+	if ipv6 != "" && state.LastIPv6 != ipv6 {
+		changed = true
+	}
+	if !changed {
 		return
 	}
+
+	next := state
+	if ipv4 != "" {
+		next.LastIPv4 = ipv4
+	}
+	if ipv6 != "" {
+		next.LastIPv6 = ipv6
+	}
+
 	if firstRun && !conf.Email.OnStart {
 		// 仅记录基线，不发信
-		saveEmailState(emailState{LastIPv4: ipv4, LastIPv6: ipv6})
+		storeEmailState(next)
 		util.Log("邮件通知: 已记录初始 IP 基线 (%s / %s)，本次不发送", displayOrDash(ipv4), displayOrDash(ipv6))
 		return
 	}
@@ -227,11 +261,56 @@ func NotifyIPChangeEmail(conf *Config, ipv4, ipv6 string) {
 		return
 	}
 
-	saveEmailState(emailState{LastIPv4: ipv4, LastIPv6: ipv6, LastSent: time.Now().Unix()})
+	next.LastSent = time.Now().Unix()
+	storeEmailState(next)
 	if firstRun {
 		util.Log("邮件通知: 已发送初始 IP 基线邮件 (%s / %s)", displayOrDash(ipv4), displayOrDash(ipv6))
 	} else {
 		util.Log("邮件通知: IP 已变更，通知邮件发送成功 (%s / %s)", displayOrDash(ipv4), displayOrDash(ipv6))
+	}
+}
+
+// filterUnstableIPv6 从逗号分隔的地址串里剔除本机标记为临时/已弃用/待定的 IPv6。
+// 解析不到 /proc/net/if_inet6 时原样返回（例如容器内用 URL 获取 WAN 地址的场景）。
+func filterUnstableIPv6(raw string) string {
+	unstable := unstableIPv6Addrs()
+	if len(unstable) == 0 {
+		return raw
+	}
+
+	kept := make([]string, 0, 4)
+	var dropped []string
+	for _, item := range strings.Split(raw, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if ip := net.ParseIP(item); ip != nil && unstable[ip.String()] {
+			dropped = append(dropped, item)
+			continue
+		}
+		kept = append(kept, item)
+	}
+
+	if len(dropped) > 0 {
+		logIgnoredIPv6(dropped)
+	}
+	sort.Strings(kept)
+	return strings.Join(kept, ",")
+}
+
+// logIgnoredIPv6 同一组被忽略的地址只记一次日志，避免每轮刷屏
+func logIgnoredIPv6(dropped []string) {
+	sort.Strings(dropped)
+	key := strings.Join(dropped, ",")
+
+	emailStateLock.Lock()
+	repeated := key == lastIgnoredIPv6
+	lastIgnoredIPv6 = key
+	emailStateLock.Unlock()
+
+	if !repeated {
+		util.Log("邮件通知: 忽略临时/已弃用的 IPv6 地址: %s", key)
 	}
 }
 
@@ -371,23 +450,135 @@ func emailStatePath() string {
 	return util.GetConfigFilePath() + ".email-state.json"
 }
 
+var (
+	// emailStateLock 同时保护内存态和日志去重标记，也顺带避免"保存配置触发的
+	// RunOnce"与定时器并发读写状态导致的重复发送
+	emailStateLock sync.Mutex
+	// emailStateMem 是本次运行内的权威状态：即便落盘失败也不会重复提醒
+	emailStateMem   *emailState
+	emailStateWarn  bool
+	lastIgnoredIPv6 string
+)
+
+// loadEmailState 优先返回内存态，其次读文件
 func loadEmailState() emailState {
-	var state emailState
+	emailStateLock.Lock()
+	defer emailStateLock.Unlock()
+
+	if emailStateMem != nil {
+		return *emailStateMem
+	}
+
 	byt, err := os.ReadFile(emailStatePath())
 	if err != nil {
-		return state
+		return emailState{}
 	}
-	_ = json.Unmarshal(byt, &state)
+	var state emailState
+	if err := json.Unmarshal(byt, &state); err != nil {
+		util.Log("邮件通知: 状态文件无法解析, 按首次运行处理: %s", err)
+		return emailState{}
+	}
 	return state
 }
 
-func saveEmailState(state emailState) {
-	byt, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		util.Log("邮件通知: 保存状态失败: %s", err)
+// storeEmailState 先更新内存态，再原子落盘。
+// 落盘失败只告警一次：内存态已经记住了本次的 IP，下一轮不会重复发同一封邮件。
+func storeEmailState(state emailState) {
+	emailStateLock.Lock()
+	emailStateMem = &state
+	emailStateLock.Unlock()
+
+	if err := writeEmailStateFile(state); err != nil {
+		emailStateLock.Lock()
+		shouldWarn := !emailStateWarn
+		emailStateWarn = true
+		emailStateLock.Unlock()
+		if shouldWarn {
+			util.Log("邮件通知: 状态写入失败 (%s), 已改用内存状态, 本次运行内不会重复提醒", err)
+		}
 		return
 	}
-	if err = os.WriteFile(emailStatePath(), byt, 0600); err != nil {
-		util.Log("邮件通知: 保存状态失败: %s", err)
+
+	emailStateLock.Lock()
+	emailStateWarn = false
+	emailStateLock.Unlock()
+}
+
+// writeEmailStateFile 先写临时文件再 rename，避免进程中途被杀留下半个 JSON
+func writeEmailStateFile(state emailState) error {
+	byt, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
 	}
+
+	path := emailStatePath()
+	tmp := path + ".tmp"
+	if err = os.WriteFile(tmp, byt, 0600); err != nil {
+		return err
+	}
+	if err = os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+// ifInet6Path 内核暴露的 IPv6 地址表，测试可覆盖
+var ifInet6Path = "/proc/net/if_inet6"
+
+// Linux 地址标志位，见 include/uapi/linux/if_addr.h
+const (
+	ipv6FlagTemporary  = 0x01 // IFA_F_SECONDARY，IPv6 下即 IFA_F_TEMPORARY
+	ipv6FlagDeprecated = 0x20
+	ipv6FlagTentative  = 0x40
+)
+
+// parseIfInet6 解析 /proc/net/if_inet6 内容，返回 规范化地址 -> 标志位
+func parseIfInet6(r io.Reader) map[string]uint32 {
+	out := make(map[string]uint32)
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 5 || len(fields[0]) != net.IPv6len*2 {
+			continue
+		}
+
+		buf := make([]byte, net.IPv6len)
+		valid := true
+		for i := 0; i < net.IPv6len; i++ {
+			v, err := strconv.ParseUint(fields[0][i*2:i*2+2], 16, 8)
+			if err != nil {
+				valid = false
+				break
+			}
+			buf[i] = byte(v)
+		}
+		if !valid {
+			continue
+		}
+
+		flags, err := strconv.ParseUint(fields[4], 16, 32)
+		if err != nil {
+			continue
+		}
+		out[net.IP(buf).String()] = uint32(flags)
+	}
+	return out
+}
+
+// unstableIPv6Addrs 返回本机上临时/已弃用/待定的 IPv6 地址集合
+func unstableIPv6Addrs() map[string]bool {
+	f, err := os.Open(ifInet6Path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	out := make(map[string]bool)
+	for addr, flags := range parseIfInet6(f) {
+		if flags&(ipv6FlagTemporary|ipv6FlagDeprecated|ipv6FlagTentative) != 0 {
+			out[addr] = true
+		}
+	}
+	return out
 }

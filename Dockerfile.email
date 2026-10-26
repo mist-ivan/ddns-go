@@ -1,24 +1,23 @@
-# fork 版镜像：在官方 ddns-go 基础上加入 IP 变更邮件提醒
-# 构建：docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email.1 .
+# fork ???????????ddns-go ????????IP ?????????
+# ?????ocker build -f Dockerfile.email -t ddns-go-email:6.17.7-email.1 .
 FROM golang:1.25-alpine AS builder
 
 WORKDIR /src
 
-# 依赖单独一层，改代码时不必重新下载模块
+# ?????????????????????????????
 COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
 
-ARG VERSION=6.17.7-email.2
+ARG VERSION=6.17.7-email.3
 RUN CGO_ENABLED=0 go build -trimpath \
       -ldflags "-s -w -X main.version=${VERSION}" \
       -o /out/ddns-go .
 
 FROM alpine:3.21
 
-# tzdata 提供时区，curl/grep 方便容器内排查
-RUN apk add --no-cache ca-certificates tzdata curl grep
+# tzdata ????????url/grep ???????????RUN apk add --no-cache ca-certificates tzdata curl grep
 
 WORKDIR /app
 COPY --from=builder /out/ddns-go /app/ddns-go
@@ -26,8 +25,7 @@ COPY --from=builder /out/ddns-go /app/ddns-go
 ENV TZ=Asia/Shanghai
 EXPOSE 9876
 
-# 配置文件默认位于 /root/.ddns_go_config.yaml，挂载 /root 即可持久化
-VOLUME ["/root"]
+# ???????????? /root/.ddns_go_config.yaml?????/root ????????VOLUME ["/root"]
 
 ENTRYPOINT ["/app/ddns-go"]
 CMD ["-l", ":9876", "-f", "600"]
