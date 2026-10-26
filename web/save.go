@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/jeessy2/ddns-go/v6/config"
@@ -35,6 +36,15 @@ func checkAndSave(request *http.Request) string {
 		WebhookURL         string       `json:"WebhookURL"`
 		WebhookRequestBody string       `json:"WebhookRequestBody"`
 		WebhookHeaders     string       `json:"WebhookHeaders"`
+		EmailEnable        bool         `json:"EmailEnable"`
+		EmailSMTPHost      string       `json:"EmailSMTPHost"`
+		EmailSMTPPort      string       `json:"EmailSMTPPort"`
+		EmailUsername      string       `json:"EmailUsername"`
+		EmailPassword      string       `json:"EmailPassword"`
+		EmailFrom          string       `json:"EmailFrom"`
+		EmailTo            string       `json:"EmailTo"`
+		EmailEncrypt       string       `json:"EmailEncrypt"`
+		EmailOnStart       bool         `json:"EmailOnStart"`
 		DnsConf            []dnsConf4JS `json:"DnsConf"`
 	}
 
@@ -56,6 +66,20 @@ func checkAndSave(request *http.Request) string {
 	conf.WebhookURL = strings.TrimSpace(data.WebhookURL)
 	conf.WebhookRequestBody = strings.TrimSpace(data.WebhookRequestBody)
 	conf.WebhookHeaders = strings.TrimSpace(data.WebhookHeaders)
+
+	// 邮件通知
+	conf.Email.Enable = data.EmailEnable
+	conf.Email.SMTPHost = strings.TrimSpace(data.EmailSMTPHost)
+	conf.Email.SMTPPort = parseSMTPPort(data.EmailSMTPPort)
+	conf.Email.Username = strings.TrimSpace(data.EmailUsername)
+	// 密码留空表示保持原值，避免前端回显明文
+	if data.EmailPassword != "" {
+		conf.Email.Password = data.EmailPassword
+	}
+	conf.Email.From = strings.TrimSpace(data.EmailFrom)
+	conf.Email.To = strings.TrimSpace(data.EmailTo)
+	conf.Email.Encrypt = strings.TrimSpace(data.EmailEncrypt)
+	conf.Email.OnStart = data.EmailOnStart
 
 	// 如果新密码不为空则检查是否够强, 内/外网要求强度不同
 	conf.Username = usernameNew
@@ -133,4 +157,13 @@ func checkAndSave(request *http.Request) string {
 		return err.Error()
 	}
 	return "ok"
+}
+
+// parseSMTPPort 解析端口，非法值回落到 465
+func parseSMTPPort(raw string) int {
+	port, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || port <= 0 || port > 65535 {
+		return 465
+	}
+	return port
 }

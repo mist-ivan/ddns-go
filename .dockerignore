@@ -1,0 +1,9 @@
+.git
+.gitignore
+*.md
+ddns-go
+ddns-go-baseline
+ddns-go-email
+tools
+work
+dist

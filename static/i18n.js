@@ -168,6 +168,78 @@ const I18N_MAP = {
     'en': 'One header per line, such as: Authorization: Bearer API_KEY',
     'zh-cn': '一行一个Header, 如: Authorization: Bearer API_KEY'
   },
+  'Email Notification': {
+    'en': 'Email Notification',
+    'zh-cn': '邮件通知'
+  },
+  'Enable Email': {
+    'en': 'Enable Email',
+    'zh-cn': '启用邮件提醒'
+  },
+  'EmailEnableHelp': {
+    'en': 'Send an email when the detected public IP address changes. Independent of the Webhook above.',
+    'zh-cn': '检测到公网 IP 变化时发送邮件提醒，与上面的 Webhook 互不影响。'
+  },
+  'SMTP Server': {
+    'en': 'SMTP Server',
+    'zh-cn': 'SMTP 服务器'
+  },
+  'EmailSMTPHelp': {
+    'en': 'Example: smtp.qq.com:465. For QQ/163 mailboxes use the authorization code, not the login password.',
+    'zh-cn': '例如 smtp.qq.com:465。QQ/163 邮箱请填写「授权码」而不是登录密码。'
+  },
+  'Encryption': {
+    'en': 'Encryption',
+    'zh-cn': '加密方式'
+  },
+  'EmailEncryptHelp': {
+    'en': 'Port 465 usually uses SSL; port 587 uses STARTTLS; port 25 is often unencrypted.',
+    'zh-cn': '465 端口通常用 SSL；587 端口用 STARTTLS；25 端口一般不加密。'
+  },
+  'SMTP Username': {
+    'en': 'SMTP Username',
+    'zh-cn': 'SMTP 账号'
+  },
+  'EmailAuthHelp': {
+    'en': 'The SMTP login account, usually the same as the sender address. Leave empty to send without authentication.',
+    'zh-cn': 'SMTP 登录账号，通常与发件人相同；留空表示匿名发送（多数服务器会拒绝）。'
+  },
+  'SMTP Password': {
+    'en': 'SMTP Password',
+    'zh-cn': 'SMTP 密码'
+  },
+  'EmailPasswordHelp': {
+    'en': 'Leave empty to keep the saved password or authorization code.',
+    'zh-cn': '留空表示不修改已保存的密码/授权码。'
+  },
+  'From': {
+    'en': 'From',
+    'zh-cn': '发件人'
+  },
+  'EmailFromHelp': {
+    'en': 'Sender address, e.g. ddns-go <you@example.com>. Defaults to the SMTP username.',
+    'zh-cn': '发件人地址，如 ddns-go <you@example.com>；留空时使用 SMTP 账号。'
+  },
+  'To': {
+    'en': 'To',
+    'zh-cn': '收件人'
+  },
+  'EmailToHelp': {
+    'en': 'Separate multiple recipients with commas.',
+    'zh-cn': '多个收件人用逗号分隔。'
+  },
+  'Notify on start': {
+    'en': 'Notify on start',
+    'zh-cn': '启动时也通知'
+  },
+  'EmailOnStartHelp': {
+    'en': 'When checked, the first run (no previous IP record) also sends a baseline email.',
+    'zh-cn': '勾选后，首次启动（没有历史 IP 记录）也会发送一封基线邮件。'
+  },
+  'Send test email': {
+    'en': 'Send test email',
+    'zh-cn': '发送测试邮件'
+  },
   'Try it': {
     'en': 'Try it',
     'zh-cn': '模拟测试Webhook'

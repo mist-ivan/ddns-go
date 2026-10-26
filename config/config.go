@@ -70,6 +70,8 @@ type Config struct {
 	DnsConf []DnsConfig
 	User
 	Webhook
+	// 邮件通知（IP 变更提醒）
+	Email Email
 	// 禁止公网访问
 	NotAllowWanAccess bool
 	// 语言
@@ -166,6 +168,14 @@ func (conf *Config) CompatibleConfig() {
 		conf.DnsConf = append(conf.DnsConf, *dnsConf)
 		cache.ConfigSingle = conf
 	}
+}
+
+// ResetConfigCache 清空配置缓存，下次读取时重新加载配置文件（测试用）
+func ResetConfigCache() {
+	cache.Lock.Lock()
+	defer cache.Lock.Unlock()
+	cache.ConfigSingle = nil
+	cache.Err = nil
 }
 
 // SaveConfig 保存配置

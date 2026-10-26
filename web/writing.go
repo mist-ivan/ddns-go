@@ -77,6 +77,7 @@ func Writing(writer http.ResponseWriter, request *http.Request) {
 		Username          string
 		Lang              string
 		config.Webhook
+		Email         config.Email
 		Version       string
 		Ipv4          []config.NetInterface
 		Ipv6          []config.NetInterface
@@ -87,6 +88,7 @@ func Writing(writer http.ResponseWriter, request *http.Request) {
 		Username:          conf.User.Username,
 		Lang:              conf.Lang,
 		Webhook:           conf.Webhook,
+		Email:             conf.Email,
 		Version:           os.Getenv(VersionEnv),
 		Ipv4:              ipv4,
 		Ipv6:              ipv6,

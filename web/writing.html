@@ -298,7 +298,7 @@
               <div class="form-group row">
                 <label data-i18n="Username" for="Username" class="col-sm-2 col-form-label">Username</label>
                 <div class="col-sm-10">
-                  <input class="form-control form" name="Username" id="Username" value="{{.Username}}"
+                  <input class="form-control form" name="Username" id="Username" value="{{.Email.Username}}"
                     autocomplete="username" aria-describedby="UsernameHelp" />
                   <small data-i18n-html="accountHelp" id="UsernameHelp" class="form-text text-muted"></small>
                 </div>
@@ -358,6 +358,105 @@
               </div>
             </div>
           </div>
+
+          <div class="portlet">
+            <h5 data-i18n="Email Notification" class="portlet__head">Email Notification</h5>
+            <div class="portlet__body">
+              <div class="form-group row">
+                <label data-i18n="Enable Email" for="EmailEnable" class="col-sm-2 col-form-label">Enable Email</label>
+                <div class="col-sm-10">
+                  <input type="checkbox" class="form-check-inline" style="margin-top: 5px" id="EmailEnable"
+                    name="EmailEnable" {{if .Email.Enable}}checked{{end}} />
+                  <small data-i18n-html="EmailEnableHelp" id="EmailEnableHelp" class="form-text text-muted"></small>
+                </div>
+              </div>
+
+              <div class="form-group row">
+                <label data-i18n="SMTP Server" for="EmailSMTPHost" class="col-sm-2 col-form-label">SMTP Server</label>
+                <div class="col-sm-10">
+                  <div class="input-group">
+                    <input class="form-control form" name="EmailSMTPHost" id="EmailSMTPHost" value="{{.Email.SMTPHost}}"
+                      placeholder="smtp.qq.com" aria-describedby="EmailSMTPHelp" />
+                    <input class="form-control form" name="EmailSMTPPort" id="EmailSMTPPort"
+                      value="{{if .Email.SMTPPort}}{{.Email.SMTPPort}}{{else}}465{{end}}" placeholder="465"
+                      style="max-width: 100px" />
+                  </div>
+                  <small data-i18n-html="EmailSMTPHelp" id="EmailSMTPHelp" class="form-text text-muted"></small>
+                </div>
+              </div>
+
+              <div class="form-group row">
+                <label data-i18n="Encryption" for="EmailEncrypt" class="col-sm-2 col-form-label">Encryption</label>
+                <div class="col-sm-10">
+                  <select class="form-control form" name="EmailEncrypt" id="EmailEncrypt">
+                    <option value="ssl" {{if or (eq .Email.Encrypt "") (eq .Email.Encrypt "ssl")}}selected{{end}}>SSL / 隐式 TLS (465)
+                    </option>
+                    <option value="starttls" {{if eq .Email.Encrypt "starttls"}}selected{{end}}>STARTTLS (587)</option>
+                    <option value="none" {{if eq .Email.Encrypt "none"}}selected{{end}}>None / 不加密 (25)</option>
+                  </select>
+                  <small data-i18n-html="EmailEncryptHelp" id="EmailEncryptHelp" class="form-text text-muted"></small>
+                </div>
+              </div>
+
+              <div class="form-group row">
+                <label data-i18n="SMTP Username" for="EmailUsername" class="col-sm-2 col-form-label">SMTP
+                  Username</label>
+                <div class="col-sm-10">
+                  <input class="form-control form" name="EmailUsername" id="EmailUsername" value="{{.Email.Username}}"
+                    placeholder="you@example.com" autocomplete="off" aria-describedby="EmailAuthHelp" />
+                  <small data-i18n-html="EmailAuthHelp" id="EmailAuthHelp" class="form-text text-muted"></small>
+                </div>
+              </div>
+
+              <div class="form-group row">
+                <label data-i18n="SMTP Password" for="EmailPassword" class="col-sm-2 col-form-label">SMTP
+                  Password</label>
+                <div class="col-sm-10">
+                  <input class="form-control form" type="password" name="EmailPassword" id="EmailPassword"
+                    autocomplete="new-password" {{if .Email.Password}}placeholder="已保存，留空表示不修改"{{end}} />
+                  <small data-i18n-html="EmailPasswordHelp" id="EmailPasswordHelp"
+                    class="form-text text-muted"></small>
+                </div>
+              </div>
+
+              <div class="form-group row">
+                <label data-i18n="From" for="EmailFrom" class="col-sm-2 col-form-label">From</label>
+                <div class="col-sm-10">
+                  <input class="form-control form" name="EmailFrom" id="EmailFrom" value="{{.Email.From}}"
+                    placeholder="ddns-go <you@example.com>" aria-describedby="EmailFromHelp" />
+                  <small data-i18n-html="EmailFromHelp" id="EmailFromHelp" class="form-text text-muted"></small>
+                </div>
+              </div>
+
+              <div class="form-group row">
+                <label data-i18n="To" for="EmailTo" class="col-sm-2 col-form-label">To</label>
+                <div class="col-sm-10">
+                  <input class="form-control form" name="EmailTo" id="EmailTo" value="{{.Email.To}}"
+                    placeholder="a@example.com, b@example.com" aria-describedby="EmailToHelp" />
+                  <small data-i18n-html="EmailToHelp" id="EmailToHelp" class="form-text text-muted"></small>
+                </div>
+              </div>
+
+              <div class="form-group row">
+                <label data-i18n="Notify on start" for="EmailOnStart" class="col-sm-2 col-form-label">Notify on
+                  start</label>
+                <div class="col-sm-10">
+                  <input type="checkbox" class="form-check-inline" style="margin-top: 5px" id="EmailOnStart"
+                    name="EmailOnStart" {{if .Email.OnStart}}checked{{end}} />
+                  <small data-i18n-html="EmailOnStartHelp" id="EmailOnStartHelp" class="form-text text-muted"></small>
+                </div>
+              </div>
+
+              <div class="form-group row">
+                <label class="col-sm-2 col-form-label"></label>
+                <div class="col-sm-10">
+                  <button data-i18n="Send test email" type="button" class="btn btn-primary btn-sm" id="emailTestBtn">
+                    Send test email
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
         </form>
 
         <button data-i18n="Save" class="btn btn-primary submit_btn" style="margin-bottom: 16px" data-placement="top">
@@ -394,6 +493,15 @@
     WebhookURL: document.getElementById("WebhookURL").value,
     WebhookRequestBody: document.getElementById("WebhookRequestBody").value,
     WebhookHeaders: document.getElementById("WebhookHeaders").value,
+    EmailEnable: document.getElementById("EmailEnable").checked,
+    EmailSMTPHost: document.getElementById("EmailSMTPHost").value,
+    EmailSMTPPort: document.getElementById("EmailSMTPPort").value,
+    EmailUsername: document.getElementById("EmailUsername").value,
+    EmailPassword: document.getElementById("EmailPassword").value,
+    EmailFrom: document.getElementById("EmailFrom").value,
+    EmailTo: document.getElementById("EmailTo").value,
+    EmailEncrypt: document.getElementById("EmailEncrypt").value,
+    EmailOnStart: document.getElementById("EmailOnStart").checked,
   };
   const defaultDnsConf = {
     Name: "",
@@ -892,6 +1000,52 @@
         type: "error",
         duration: 5000,
       });
+    }
+  });
+
+  // 发送测试邮件
+  document.getElementById("emailTestBtn").addEventListener('click', async e => {
+    e.preventDefault();
+    const $btn = e.target;
+    $btn.disabled = true;
+    try {
+      const resp = await request.post("./emailTest", {
+        Enable: globalConf.EmailEnable,
+        SMTPHost: globalConf.EmailSMTPHost,
+        SMTPPort: globalConf.EmailSMTPPort,
+        Username: globalConf.EmailUsername,
+        Password: globalConf.EmailPassword,
+        From: globalConf.EmailFrom,
+        To: globalConf.EmailTo,
+        Encrypt: globalConf.EmailEncrypt,
+      });
+      if (resp && resp.ok) {
+        showMessage({
+          content: i18n({
+            "en": "Test email sent, please check the inbox (and the spam folder)",
+            "zh-cn": "测试邮件已发送，请检查收件箱（含垃圾邮件）",
+          }),
+          type: "success",
+          duration: 5000,
+        });
+      } else {
+        showMessage({
+          content: (resp && resp.msg) || i18n({
+            "en": "Failed to send the test email",
+            "zh-cn": "测试邮件发送失败",
+          }),
+          type: "error",
+          duration: 8000,
+        });
+      }
+    } catch (err) {
+      showMessage({
+        content: err.toString(),
+        type: "error",
+        duration: 5000,
+      });
+    } finally {
+      $btn.disabled = false;
     }
   });
 

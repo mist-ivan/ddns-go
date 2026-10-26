@@ -1,6 +1,8 @@
 package dns
 
 import (
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/jeessy2/ddns-go/v6/config"
@@ -58,6 +60,9 @@ func RunOnce() {
 			Ipcache = append(Ipcache, [2]util.IpCache{{}, {}})
 		}
 	}
+
+	// 收集本轮所有配置检测到的公网 IP，用于邮件提醒
+	var detectedIPv4, detectedIPv6 []string
 
 	for i, dc := range conf.DnsConf {
 		var dnsSelected DNS
@@ -125,6 +130,12 @@ func RunOnce() {
 		}
 		dnsSelected.Init(&dc, &Ipcache[i][0], &Ipcache[i][1])
 		domains := dnsSelected.AddUpdateDomainRecords()
+		if domains.Ipv4Addr != "" {
+			detectedIPv4 = append(detectedIPv4, domains.Ipv4Addr)
+		}
+		if domains.Ipv6Addr != "" {
+			detectedIPv6 = append(detectedIPv6, domains.Ipv6Addr)
+		}
 		// webhook
 		v4Status, v6Status := config.ExecWebhook(&domains, &conf)
 		// 重置单个cache
@@ -136,5 +147,24 @@ func RunOnce() {
 		}
 	}
 
+	// IP 变更邮件提醒（与 webhook 相互独立）
+	config.NotifyIPChangeEmail(&conf, uniqueAddr(detectedIPv4), uniqueAddr(detectedIPv6))
+
 	util.ForceCompareGlobal = false
+}
+
+// uniqueAddr 去重并拼接地址，正常情况下只会有一个公网 IP
+func uniqueAddr(addrs []string) string {
+	seen := make(map[string]bool, len(addrs))
+	out := make([]string, 0, len(addrs))
+	for _, addr := range addrs {
+		addr = strings.TrimSpace(addr)
+		if addr == "" || seen[addr] {
+			continue
+		}
+		seen[addr] = true
+		out = append(out, addr)
+	}
+	sort.Strings(out)
+	return strings.Join(out, ",")
 }

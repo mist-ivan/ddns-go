@@ -50,6 +50,16 @@ func init() {
 	message.SetString(language.English, "Webhook Header不正确: %s", "Webhook header is invalid: %s")
 	message.SetString(language.English, "请输入Webhook的URL", "Please enter the Webhook URL")
 
+	// email notification
+	message.SetString(language.English, "邮件通知发送失败: %s", "Failed to send email notification: %s")
+	message.SetString(language.English, "邮件通知: 已记录初始 IP 基线 (%s / %s)，本次不发送", "Email notification: initial IP baseline recorded (%s / %s), nothing sent this time")
+	message.SetString(language.English, "邮件通知: 已发送初始 IP 基线邮件 (%s / %s)", "Email notification: baseline email sent (%s / %s)")
+	message.SetString(language.English, "邮件通知: IP 已变更，通知邮件发送成功 (%s / %s)", "Email notification: IP changed, notification email sent (%s / %s)")
+	message.SetString(language.English, "邮件发送失败，尝试使用 LOGIN 方式重试: %s", "Sending email failed, retrying with AUTH LOGIN: %s")
+	message.SetString(language.English, "邮件通知: 保存状态失败: %s", "Email notification: failed to save state: %s")
+	message.SetString(language.English, "邮件测试失败: %s", "Email test failed: %s")
+	message.SetString(language.English, "邮件测试成功，已发送至: %s", "Email test succeeded, sent to: %s")
+
 	// callback
 	message.SetString(language.English, "Callback的URL不正确", "Callback URL is incorrect")
 	message.SetString(language.English, "Callback调用成功, 域名: %s, IP: %s, 返回数据: %s", "Successfully called Callback! Domain: %s, IP: %s, Response body: %s")
