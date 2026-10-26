@@ -828,3 +828,36 @@ func TestGetEmailStateSnapshot(t *testing.T) {
 		t.Fatalf("snapshot = %q %q %d", ipv4, ipv6, lastSent)
 	}
 }
+
+// --- v0.5: 默认语言 ---
+
+func TestEmptyLangDefaultsToChinese(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("dnsconf: []\nuser:\n    username: admin\n    password: \"\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(util.ConfigFilePathENV, cfgPath)
+	ResetConfigCache()
+
+	conf, err := GetConfigCached()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conf.Lang != "zh" {
+		t.Fatalf("empty lang should default to zh, got %q", conf.Lang)
+	}
+
+	// 显式配置的语言不能被覆盖
+	if err := os.WriteFile(cfgPath, []byte("lang: en\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ResetConfigCache()
+	conf2, err := GetConfigCached()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conf2.Lang != "en" {
+		t.Fatalf("explicit lang should be preserved, got %q", conf2.Lang)
+	}
+}

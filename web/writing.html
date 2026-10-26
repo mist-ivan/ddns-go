@@ -416,6 +416,12 @@
                     autocomplete="new-password" {{if .Email.Password}}placeholder="已保存，留空表示不修改"{{end}} />
                   <small data-i18n-html="EmailPasswordHelp" id="EmailPasswordHelp"
                     class="form-text text-muted"></small>
+                  {{if .Email.Password}}
+                  <button type="button" class="btn btn-outline-danger btn-sm mt-1" id="emailClearPwdBtn">
+                    <span data-i18n="Clear saved password">Clear saved password</span>
+                  </button>
+                  <small class="form-text text-muted" id="emailClearPwdHint"></small>
+                  {{end}}
                 </div>
               </div>
 
@@ -500,7 +506,7 @@
           Save
         </button>
       </div>
-      <div class="logs-panel col-md-10 offset-md-1" style="visibility: hidden" id="logs-panel">
+      <div class="logs-panel" style="visibility: hidden" id="logs-panel">
         <textarea class="logs form-control" id="logs" readonly></textarea>
         <button data-i18n="Clear" type="button" class="btn btn-danger btn-sm" id="clearLogBtn">
           Clear
@@ -540,6 +546,7 @@
     EmailEncrypt: document.getElementById("EmailEncrypt").value,
     EmailOnStart: document.getElementById("EmailOnStart").checked,
     EmailAlertOnFetchFailure: document.getElementById("EmailAlertOnFetchFailure").checked,
+    EmailPasswordClear: false,
   };
   const defaultDnsConf = {
     Name: "",
@@ -881,6 +888,7 @@
             duration: 5000,
           });
         } else {
+          globalConf.EmailPasswordClear = false;
           showMessage({
             content: i18n({
               "en": "Successfully saved",
@@ -1209,6 +1217,20 @@
     $emailRefresh.addEventListener('click', async (e) => {
       e.preventDefault();
       await refreshEmailPanel();
+    });
+  }
+
+  const $emailClearPwd = document.getElementById("emailClearPwdBtn");
+  if ($emailClearPwd) {
+    $emailClearPwd.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (!confirm(i18n({
+        "en": "Clear the saved SMTP password? It takes effect after you save.",
+        "zh-cn": "确定清除已保存的 SMTP 密码吗？保存后生效。",
+      }))) return;
+      globalConf.EmailPasswordClear = true;
+      const $hint = document.getElementById("emailClearPwdHint");
+      if ($hint) $hint.textContent = i18n({ "en": "will be cleared on save", "zh-cn": "保存后将清除" });
     });
   }
 

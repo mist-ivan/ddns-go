@@ -245,8 +245,8 @@ const I18N_MAP = {
     'zh-cn': '获取失败时告警'
   },
   'EmailAlertOnFetchHelp': {
-    'en': 'Sends an alert after 3 consecutive rounds without a public IP, and a recovery notice once it works again. Off by default.',
-    'zh-cn': '连续 3 轮（约 30 分钟）取不到公网 IP 时发一封告警，恢复后再发一封恢复通知。默认关闭。'
+    'en': 'Sends an alert after 3 consecutive rounds without a public IP, and a recovery notice once it works again.',
+    'zh-cn': '连续 3 轮（约 30 分钟）取不到公网 IP 时发一封告警，恢复后再发一封恢复通知。'
   },
   'History': {
     'en': 'History',
@@ -279,6 +279,10 @@ const I18N_MAP = {
   'Clear history': {
     'en': 'Clear history',
     'zh-cn': '清空历史'
+  },
+  'Clear saved password': {
+    'en': 'Clear saved password',
+    'zh-cn': '清除已保存的密码'
   },
   'Try it': {
     'en': 'Try it',

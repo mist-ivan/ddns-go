@@ -191,3 +191,52 @@ func TestEmailStatusEndpoint(t *testing.T) {
 		}
 	}
 }
+
+// 保存时可以通过 EmailPasswordClear 清空已存的 SMTP 密码
+func TestSaveCanClearEmailPassword(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	initial := `dnsconf: []
+user:
+    username: admin
+    password: ""
+email:
+    enable: false
+    smtphost: smtp.qq.com
+    password: saved-secret
+    to: a@x.com
+lang: zh
+`
+	if err := os.WriteFile(cfgPath, []byte(initial), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(util.ConfigFilePathENV, cfgPath)
+	config.ResetConfigCache()
+
+	payload := `{
+      "Username": "admin",
+      "Password": "V3ry-Str0ng-Passphrase!2026",
+      "Lang": "zh",
+      "EmailEnable": false,
+      "EmailSMTPHost": "smtp.qq.com",
+      "EmailSMTPPort": "465",
+      "EmailPassword": "",
+      "EmailPasswordClear": true,
+      "EmailTo": "a@x.com",
+      "DnsConf": []
+    }`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/save", strings.NewReader(payload))
+	Save(rec, req)
+
+	if !strings.Contains(rec.Body.String(), `"result":"ok"`) {
+		t.Fatalf("save failed: %s", rec.Body.String())
+	}
+	saved, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(saved), "saved-secret") {
+		t.Fatalf("password should have been cleared:\n%s", saved)
+	}
+}

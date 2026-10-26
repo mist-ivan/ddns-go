@@ -120,6 +120,11 @@ func GetConfigCached() (conf Config, err error) {
 		return *cache.ConfigSingle, err
 	}
 
+	// fork 默认语言：配置里没写语言时用中文，界面与日志都以中文呈现
+	if strings.TrimSpace(cache.ConfigSingle.Lang) == "" {
+		cache.ConfigSingle.Lang = "zh"
+	}
+
 	// 未填写登录信息, 确保不能从公网访问
 	if cache.ConfigSingle.Username == "" && cache.ConfigSingle.Password == "" {
 		cache.ConfigSingle.NotAllowWanAccess = true
@@ -132,6 +137,11 @@ func GetConfigCached() (conf Config, err error) {
 
 // CompatibleConfig 兼容之前的配置文件
 func (conf *Config) CompatibleConfig() {
+
+	// fork 默认语言：配置里没有语言时用中文（否则界面和日志都会退回英文）
+	if strings.TrimSpace(conf.Lang) == "" {
+		conf.Lang = "zh"
+	}
 
 	// 如果之前密码不为空且不是bcrypt加密后的密码, 把密码加密并保存
 	if conf.Password != "" && !util.IsHashedPassword(conf.Password) {

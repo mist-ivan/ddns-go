@@ -47,6 +47,7 @@ func checkAndSave(request *http.Request) string {
 		EmailEncrypt       string       `json:"EmailEncrypt"`
 		EmailOnStart       bool         `json:"EmailOnStart"`
 		EmailAlertOnFetch  bool         `json:"EmailAlertOnFetchFailure"`
+		EmailPasswordClear bool         `json:"EmailPasswordClear"`
 		DnsConf            []dnsConf4JS `json:"DnsConf"`
 	}
 
@@ -84,7 +85,10 @@ func checkAndSave(request *http.Request) string {
 	}
 	conf.Email.Username = strings.TrimSpace(data.EmailUsername)
 	// 密码留空表示保持原值，避免前端回显明文
-	if data.EmailPassword != "" {
+	if data.EmailPasswordClear {
+		// 用户显式要求清除已保存的密码
+		conf.Email.Password = ""
+	} else if data.EmailPassword != "" {
 		conf.Email.Password = data.EmailPassword
 	}
 	conf.Email.From = strings.TrimSpace(data.EmailFrom)

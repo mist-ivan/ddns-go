@@ -16,10 +16,9 @@ body {
 
 #mask {
     background-color: #00000088;
-    height: 100%;
-    width: 100%;
-    position: absolute;
-    z-index: 1;
+    position: fixed;
+    inset: 0;
+    z-index: 1050;
 }
 
 [data-theme='dark'] .form-control {
@@ -182,9 +181,16 @@ main {
     box-shadow: unset;
 }
 
-.col-md-6.logs-panel {
+.logs-panel {
+    /* 浮层：点“日志”后立刻出现在视口中央，不需要滚动页面 */
     position: fixed;
-    left: 0;
+    top: 8vh;
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(960px, 92vw) !important;
+    max-height: 80vh;
+    overflow: auto;
+    z-index: 1055;
 }
 
 #msg-container {
