@@ -1,5 +1,5 @@
 # fork 版镜像：在官方 ddns-go 基础上加入 IP 变更邮件提醒
-# 构建：docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.5 .
+# 构建：docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.6 .
 FROM golang:1.25-alpine AS builder
 
 WORKDIR /src
@@ -10,7 +10,7 @@ RUN go mod download
 
 COPY . .
 
-ARG VERSION=6.17.7-email-0.5
+ARG VERSION=6.17.7-email-0.6
 RUN CGO_ENABLED=0 go build -trimpath \
       -ldflags "-s -w -X main.version=${VERSION}" \
       -o /out/ddns-go .

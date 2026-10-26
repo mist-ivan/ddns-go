@@ -4,7 +4,7 @@
 新增「公网 IP 变更时发送邮件提醒」功能。其余行为与原版一致。
 
 - 源码：`/home/mist/work/ddns-go`（分支 `main`，以仓库当前 HEAD 为准）
-- 镜像：`ddns-go-email:6.17.7-email-0.5`（约 40 MB，多阶段构建）
+- 镜像：`ddns-go-email:6.17.7-email-0.6`（约 40 MB，多阶段构建）
 - 测试：`/home/mist/work/test`（假 SMTP + 假回调，可随时重跑）
 
 ## 与原版的差异
@@ -63,7 +63,7 @@ fork 版把默认检测间隔从 300 秒改为 **600 秒（10 分钟）**：
 ```bash
 docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.5 -l :9876 -f 120
+  ddns-go-email:6.17.7-email-0.6 -l :9876 -f 120
 ```
 
 ## 配置字段
@@ -100,7 +100,7 @@ email:
 
 ```bash
 cd /home/mist/work/ddns-go
-sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.5 .
+sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.6 .
 ```
 
 ## 运行
@@ -109,7 +109,7 @@ sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.5 .
 sudo docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 \
   -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.5
+  ddns-go-email:6.17.7-email-0.6
 ```
 
 打开 `http://<主机IP>:9876`，配置 DNS 与邮件通知后保存即可。
@@ -133,6 +133,18 @@ python3 /home/mist/work/test/verify_mail.py
 - IP 未变 → 不重复发送
 
 ## 更新记录
+
+### 6.17.7-email-0.6
+
+修复「配置切换」里删除配置的逻辑问题（纯前端，后端无改动）：
+
+| 问题 | 表现 | 修复 |
+|---|---|---|
+| 删除第一个配置会误触发"新增" | 删除后只往前找可用配置，删索引 0 时走到 -1，落到 `else` 分支调用 `addBtn.click()`，结果凭空多出一个空白配置、选中项跳到末尾 | 改为**优先选后一个**有效配置，没有再往前找；全部删光时清空数组与下拉，重新给一个空白配置 |
+| 没有二次确认 | 点一下立即生效，误点后若顺手保存则配置真的丢失 | 删除前弹确认框，提示"保存后才生效，未保存前刷新页面可撤销" |
+| `getConfName()` 空值异常 | 删除后该槽位是 `null`，再调用会读 `.DnsName` 抛 TypeError | 空槽位返回 `"N - 已删除"` 占位 |
+
+验证方式：用 Node 仿真四种删除场景（删第一个/中间/最后/唯一一个），再抓真实页面注入点击脚本、用无头浏览器渲染确认数组、下拉项与选中索引。
 
 ### 6.17.7-email-0.5
 

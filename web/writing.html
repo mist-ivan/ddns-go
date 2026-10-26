@@ -790,8 +790,13 @@
   }
 
   // 获取配置名称或生成默认名称
-  function getConfName(idx, _default = dnsConf[idx].DnsName) {
-    return dnsConf[idx].Name || `${idx + 1} - ${_default}`;
+  function getConfName(idx, _default) {
+    const conf = dnsConf[idx];
+    if (!conf) {
+      // 该位置已被删除（数组里是 null），返回占位名，避免读取 .DnsName 抛错
+      return `${idx + 1} - ` + i18n({ "en": "Deleted", "zh-cn": "已删除" });
+    }
+    return conf.Name || `${idx + 1} - ${_default ?? conf.DnsName}`;
   }
 
   const $langSelect = document.getElementById("langSelect");
@@ -853,19 +858,55 @@
   // 删除配置按钮被点击
   document.getElementById("delBtn").addEventListener('click', e => {
     e.preventDefault();
+    if (configIndex < 0 || !dnsConf[configIndex]) {
+      return;
+    }
+
+    const confName = getConfName(configIndex);
+    if (!confirm(i18n({
+      "en": `Delete config "${confName}"? It only takes effect after you save; reload the page to undo.`,
+      "zh-cn": `确定删除配置「${confName}」吗？保存后才真正生效，未保存前刷新页面可以撤销。`,
+    }))) {
+      return;
+    }
+
     const $index = document.getElementById("index");
-    $index.options[configIndex].disabled = true;
-    $index.options[configIndex].text = configIndex + 1 + " - Deleted";
     dnsConf[configIndex] = null;
-    while (dnsConf[configIndex] === null && configIndex >= 0) {
-      configIndex--;
+    if ($index.options[configIndex]) {
+      $index.options[configIndex].disabled = true;
+      $index.options[configIndex].text =
+        configIndex + 1 + i18n({ "en": " - Deleted", "zh-cn": " - 已删除" });
     }
-    if (configIndex >= 0) {
-      $index.value = configIndex;
-      showConf(configIndex);
-    } else {
-      document.getElementById("addBtn").click();
+
+    // 优先选后一个配置，没有就往前找。
+    // 原实现只往前找，删掉第一个时会一路走到 -1，误触发下面的“新增配置”。
+    let next = -1;
+    for (let i = configIndex + 1; i < dnsConf.length; i++) {
+      if (dnsConf[i]) {
+        next = i;
+        break;
+      }
     }
+    if (next < 0) {
+      for (let i = configIndex - 1; i >= 0; i--) {
+        if (dnsConf[i]) {
+          next = i;
+          break;
+        }
+      }
+    }
+
+    if (next >= 0) {
+      configIndex = next;
+      $index.value = next;
+      showConf(next);
+      return;
+    }
+
+    // 全部删光：清空下拉与数组，重新给一个空白配置
+    dnsConf = [];
+    $index.innerHTML = "";
+    document.getElementById("addBtn").click();
   });
 
   // 保存配置按钮被点击
