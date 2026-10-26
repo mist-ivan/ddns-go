@@ -34,8 +34,8 @@ var updateFlag = flag.Bool("u", false, "Upgrade ddns-go to the latest version")
 // 监听地址
 var listen = flag.String("l", ":9876", "Listen address")
 
-// 更新频率(秒)
-var every = flag.Int("f", 300, "Update frequency(seconds)")
+// 更新频率(秒)。fork 版默认改为 600 秒（10 分钟）
+var every = flag.Int("f", 600, "Update frequency(seconds)")
 
 // 缓存次数
 var ipCacheTimes = flag.Int("cacheTimes", 5, "Cache times")

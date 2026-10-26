@@ -4,7 +4,7 @@
 新增「公网 IP 变更时发送邮件提醒」功能。其余行为与原版一致。
 
 - 源码：`/home/mist/work/ddns-go`（分支 `master`，提交 `0ea105f`）
-- 镜像：`ddns-go-email:6.17.7-email.1`（40.3 MB，多阶段构建）
+- 镜像：`ddns-go-email:6.17.7-email.2`（40.3 MB，多阶段构建）
 - 测试：`/home/mist/work/test`（假 SMTP + 假回调，可随时重跑）
 
 ## 与原版的差异
@@ -17,9 +17,9 @@
 | `web/save.go` | 解析并保存邮件配置；SMTP 密码留空表示保持原值 |
 | `web/writing.go` + `web/writing.html` | 新增「邮件通知」配置区与「发送测试邮件」按钮 |
 | `web/emailTest.go` | 新增 `/emailTest` 接口 |
-| `main.go` | 注册 `/emailTest` 路由 |
+| `main.go` | 注册 `/emailTest` 路由；`-f` 检测间隔默认值 300 → **600 秒** |
 | `static/i18n.js` / `util/messages.go` | 中英文文案 |
-| `Dockerfile.email` | 多阶段构建的镜像定义 |
+| `Dockerfile.email` | 多阶段构建的镜像定义，CMD 默认 `-f 600` |
 | `config/email_test.go` / `web/email_test.go` | 单元测试 |
 
 ## 行为语义
@@ -32,6 +32,27 @@
 4. 发送失败时**不更新状态**，下一轮自动重试，不会丢事件。
 5. 状态文件与配置文件同目录：`<配置文件路径>.email-state.json`，随挂载卷持久化。
 6. 邮件通知与原有 Webhook 相互独立，可同时开启。
+
+## 检测间隔
+
+fork 版把默认检测间隔从 300 秒改为 **600 秒（10 分钟）**：
+
+- 程序 flag：`-f` 默认 `600`（`main.go`）
+- 镜像 CMD：`-l :9876 -f 600`（`Dockerfile.email`）
+
+`RunTimer` 是「执行一轮 → sleep(`-f`)」的循环，所以实际周期 = 600 秒 + 单轮耗时。
+每轮都会重新获取公网 IP（无缓存），因此 IP 变化后最迟约 10 分钟发出提醒。
+
+另外 `-cacheTimes`（默认 5）只影响「与 DNS 服务商比对」的频率：IP 未变时跳过 5 轮，
+第 6 轮才真正调用服务商 API，用于避免触发限流；它不影响 IP 获取，也不影响邮件判断。
+
+需要临时改快/改慢时，重建容器并显式传参即可覆盖默认值：
+
+```bash
+docker run -d --name ddns-go-email --restart unless-stopped \
+  -p 9876:9876 -v /opt/ddns-go:/root \
+  ddns-go-email:6.17.7-email.2 -l :9876 -f 120
+```
 
 ## 配置字段
 
@@ -64,7 +85,7 @@ email:
 
 ```bash
 cd /home/mist/work/ddns-go
-sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email.1 .
+sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email.2 .
 ```
 
 ## 运行
@@ -73,7 +94,7 @@ sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email.1 .
 sudo docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 \
   -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email.1
+  ddns-go-email:6.17.7-email.2
 ```
 
 打开 `http://<主机IP>:9876`，配置 DNS 与邮件通知后保存即可。
