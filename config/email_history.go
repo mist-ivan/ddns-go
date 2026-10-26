@@ -112,6 +112,19 @@ func trimEmailHistoryLocked(path string) {
 	_ = os.Rename(tmp, path)
 }
 
+// ClearEmailHistory 清空历史记录文件
+func ClearEmailHistory() error {
+	emailHistoryLock.Lock()
+	defer emailHistoryLock.Unlock()
+
+	path := emailHistoryPath()
+	_ = os.Remove(path + ".tmp")
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // GetEmailHistorySummary 返回历史概要：总条数、最近一次时间、最近若干条（新的在前）
 func GetEmailHistorySummary(limit int, lang string) EmailHistorySummary {
 	emailHistoryLock.Lock()

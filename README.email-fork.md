@@ -4,7 +4,7 @@
 新增「公网 IP 变更时发送邮件提醒」功能。其余行为与原版一致。
 
 - 源码：`/home/mist/work/ddns-go`（分支 `main`，以仓库当前 HEAD 为准）
-- 镜像：`ddns-go-email:6.17.7-email-0.3`（约 40 MB，多阶段构建）
+- 镜像：`ddns-go-email:6.17.7-email-0.4`（约 40 MB，多阶段构建）
 - 测试：`/home/mist/work/test`（假 SMTP + 假回调，可随时重跑）
 
 ## 与原版的差异
@@ -63,7 +63,7 @@ fork 版把默认检测间隔从 300 秒改为 **600 秒（10 分钟）**：
 ```bash
 docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.3 -l :9876 -f 120
+  ddns-go-email:6.17.7-email-0.4 -l :9876 -f 120
 ```
 
 ## 配置字段
@@ -100,7 +100,7 @@ email:
 
 ```bash
 cd /home/mist/work/ddns-go
-sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.3 .
+sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.4 .
 ```
 
 ## 运行
@@ -109,7 +109,7 @@ sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.3 .
 sudo docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 \
   -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.3
+  ddns-go-email:6.17.7-email-0.4
 ```
 
 打开 `http://<主机IP>:9876`，配置 DNS 与邮件通知后保存即可。
@@ -133,6 +133,21 @@ python3 /home/mist/work/test/verify_mail.py
 - IP 未变 → 不重复发送
 
 ## 更新记录
+
+### 6.17.7-email-0.4
+
+以 Web 界面为主的一次优化：
+
+| 改动 | 说明 |
+|---|---|
+| **新增运行状态面板** | 页面上直接显示当前检测到的 IP、上次检测时间、下次检测倒计时、上次通知时间、历史记录条数；数据由新接口 `/emailStatus` 每 5 秒刷新，倒计时每秒更新 |
+| **历史记录可视化** | 变更/基线/失败/恢复四种类型用彩色徽章区分，显示时间与"旧 IP → 新 IP"；新增「刷新」与「清空历史」（`/emailHistoryClear`） |
+| **测试邮件结果留痕** | 点完「发送测试邮件」后按钮下方保留"上次测试：成功/失败 · 时间"，不再依赖 3 秒就消失的提示条 |
+| **错误提示净化** | 接口异常时不再把整段响应体（可能是 HTML 错误页）塞进提示条：自动提取标题、去标签、截断到 200 字 |
+| **布局加宽** | 内容区从 `col-md-6` 改为 `col-md-10`，标签列从 `col-sm-2` 加宽到 `col-sm-3`；宽屏下不再折行，整页高度从 3764px 降到约 3680px 且信息密度更高 |
+| 后端 | 新增 `dns.LastRunAt()/SetInterval()` 记录检测节奏；`config.GetEmailStateSnapshot()`、`config.ClearEmailHistory()` |
+
+新增测试：`TestClearEmailHistory`、`TestGetEmailStateSnapshot`、`TestEmailStatusEndpoint`。
 
 ### 6.17.7-email-0.3
 

@@ -303,6 +303,12 @@ func (e *Email) Send(subject, body string) error {
 	return err
 }
 
+// GetEmailStateSnapshot 返回当前记录的上次通知状态，供页面状态面板展示
+func GetEmailStateSnapshot() (ipv4, ipv6 string, lastSent int64) {
+	state := loadEmailState()
+	return state.LastIPv4, state.LastIPv6, state.LastSent
+}
+
 // deliver 建立一次 SMTP 会话并投递。
 // accepted 表示服务器已对 DATA 内容返回 250（邮件已接收）；此后即使 QUIT 失败也不应重发。
 func (e *Email) deliver(addr, host, encrypt string, auth smtp.Auth, from string, to []string, msg []byte) (accepted bool, err error) {

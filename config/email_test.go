@@ -791,3 +791,40 @@ func TestFetchFailureTrackerResetsAfterRecovery(t *testing.T) {
 		t.Fatal("second outage should alert again after the threshold")
 	}
 }
+
+// --- v0.4: 历史清空与状态快照 ---
+
+func TestClearEmailHistory(t *testing.T) {
+	dir := t.TempDir()
+	withConfigPath(t, filepath.Join(dir, "config.yaml"))
+	_ = os.Remove(emailHistoryPath())
+
+	AppendEmailHistory(EmailHistoryEntry{Kind: historyKindBaseline, IPv4: "1.1.1.1"})
+	AppendEmailHistory(EmailHistoryEntry{Kind: historyKindChange, IPv4: "2.2.2.2"})
+	if got := GetEmailHistorySummary(5, "zh").Total; got != 2 {
+		t.Fatalf("total = %d, want 2", got)
+	}
+
+	if err := ClearEmailHistory(); err != nil {
+		t.Fatalf("clear failed: %v", err)
+	}
+	if got := GetEmailHistorySummary(5, "zh").Total; got != 0 {
+		t.Fatalf("after clear total = %d, want 0", got)
+	}
+	// 清空不存在的文件也应返回 nil
+	if err := ClearEmailHistory(); err != nil {
+		t.Fatalf("clearing twice should be fine: %v", err)
+	}
+}
+
+func TestGetEmailStateSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	withConfigPath(t, filepath.Join(dir, "config.yaml"))
+
+	storeEmailState(emailState{LastIPv4: "9.9.9.9", LastIPv6: "2001:db8::1", LastSent: 1700000000})
+
+	ipv4, ipv6, lastSent := GetEmailStateSnapshot()
+	if ipv4 != "9.9.9.9" || ipv6 != "2001:db8::1" || lastSent != 1700000000 {
+		t.Fatalf("snapshot = %q %q %d", ipv4, ipv6, lastSent)
+	}
+}

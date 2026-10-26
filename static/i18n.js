@@ -264,6 +264,22 @@ const I18N_MAP = {
     'en': 'No history yet',
     'zh-cn': '暂无通知记录'
   },
+  'Status': {
+    'en': 'Status',
+    'zh-cn': '运行状态'
+  },
+  'Loading status...': {
+    'en': 'Loading status...',
+    'zh-cn': '状态加载中…'
+  },
+  'Refresh': {
+    'en': 'Refresh',
+    'zh-cn': '刷新'
+  },
+  'Clear history': {
+    'en': 'Clear history',
+    'zh-cn': '清空历史'
+  },
   'Try it': {
     'en': 'Try it',
     'zh-cn': '模拟测试Webhook'

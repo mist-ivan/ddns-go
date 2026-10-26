@@ -47,7 +47,7 @@
   <main role="main">
     <div id="mask" style="visibility: hidden"></div>
     <div class="row">
-      <div class="col-md-6 offset-md-3">
+      <div class="col-md-10 offset-md-1">
         <div class="row" style="margin-top: 15px; margin-bottom: 15px">
           <div class="col-md-4 col-sm-12">
             <button data-i18n="Save" class="btn btn-primary submit_btn">Save</button>
@@ -76,8 +76,8 @@
             <h5 data-i18n="DNS Provider" class="portlet__head" id="dnsProvider">DNS Provider</h5>
             <div class="portlet__body">
               <div class="form-group row">
-                <label class="col-sm-2 col-form-label"></label>
-                <div class="col-sm-10">
+                <label class="col-sm-3 col-form-label"></label>
+                <div class="col-sm-9">
                   <div id="DnsSelector"></div>
                   <small id="dnsHelp" class="form-text text-muted">
                   </small>
@@ -85,22 +85,22 @@
               </div>
 
               <div class="form-group row">
-                <label for="DnsID" id="dnsIdLabel" class="col-sm-2 col-form-label">AccessKey ID</label>
-                <div class="col-sm-10">
+                <label for="DnsID" id="dnsIdLabel" class="col-sm-3 col-form-label">AccessKey ID</label>
+                <div class="col-sm-9">
                   <input class="form-control form" name="DnsID" id="DnsID" />
                 </div>
               </div>
 
               <div class="form-group row">
-                <label for="DnsSecret" id="dnsSecretLabel" class="col-sm-2 col-form-label">AccessKey Secret</label>
-                <div class="col-sm-10">
+                <label for="DnsSecret" id="dnsSecretLabel" class="col-sm-3 col-form-label">AccessKey Secret</label>
+                <div class="col-sm-9">
                   <input class="form-control form" name="DnsSecret" id="DnsSecret" />
                 </div>
               </div>
 
               <div class="form-group row" id="DnsExtParamRow" style="display: none;">
-                <label for="DnsExtParam" id="dnsExtParamLabel" class="col-sm-2 col-form-label">Team ID</label>
-                <div class="col-sm-10">
+                <label for="DnsExtParam" id="dnsExtParamLabel" class="col-sm-3 col-form-label">Team ID</label>
+                <div class="col-sm-9">
                   <input class="form-control form" name="DnsExtParam" id="DnsExtParam" placeholder="team_xxxxxx (可选)" />
                   <small class="form-text text-muted">
                     <span id="dnsExtParamHelp" data-i18n-html="extParamHelp">
@@ -111,8 +111,8 @@
               </div>
 
               <div class="form-group row">
-                <label class="col-sm-2 col-form-label">TTL</label>
-                <div class="col-sm-10">
+                <label class="col-sm-3 col-form-label">TTL</label>
+                <div class="col-sm-9">
                   <select class="form-control form" name="TTL" id="TTL" value="">
                     <option data-i18n="Auto" value="" selected>Auto</option>
                     <option data-i18n="1s" value="1">1s</option>
@@ -129,8 +129,8 @@
               </div>
 
               <div class="form-group row">
-                <label data-i18n="Http Interface" for="HttpInterface" class="col-sm-2 col-form-label">Http Interface</label>
-                <div class="col-sm-10">
+                <label data-i18n="Http Interface" for="HttpInterface" class="col-sm-3 col-form-label">Http Interface</label>
+                <div class="col-sm-9">
                   <select class="form-control form" name="HttpInterface" id="HttpInterface">
                     <option data-i18n="Default" value="">Default</option>
                     {{range .AllInterfaces}}
@@ -147,18 +147,18 @@
             <h5 class="portlet__head">IPv4</h5>
             <div class="portlet__body">
               <div class="form-group row">
-                <label data-i18n="Enabled" for="Ipv4Enable" class="col-sm-2">Enabled</label>
-                <div class="col-sm-10">
+                <label data-i18n="Enabled" for="Ipv4Enable" class="col-sm-3">Enabled</label>
+                <div class="col-sm-9">
                   <input type="checkbox" class="form-check-inline" style="margin-top: 5px" id="Ipv4Enable"
                     name="Ipv4Enable" checked />
                 </div>
               </div>
 
               <div class="form-group row">
-                <label data-i18n="Get IP method" for="Ipv4Url" class="col-sm-2 col-form-label">
+                <label data-i18n="Get IP method" for="Ipv4Url" class="col-sm-3 col-form-label">
                   Get IP method
                 </label>
-                <div class="col-sm-10">
+                <div class="col-sm-9">
                   <div class="form-check form-check-inline">
                     <input class="form-check-input" type="radio" name="Ipv4GetType" id="urlRadioIpv4" value="url"
                       checked />
@@ -197,8 +197,8 @@
               </div>
 
               <div class="form-group row">
-                <label for="Ipv4Domains" class="col-sm-2 col-form-label">Domains</label>
-                <div class="col-sm-10">
+                <label for="Ipv4Domains" class="col-sm-3 col-form-label">Domains</label>
+                <div class="col-sm-9">
                   <textarea class="form-control form" id="Ipv4Domains" name="Ipv4Domains" rows="3"
                     aria-describedby="ipv4DomainsHelp"></textarea>
                   <small data-i18n-html="domainsHelp" id="ipv4DomainsHelp" class="form-text text-muted"></small>
@@ -211,18 +211,18 @@
             <h5 class="portlet__head">IPv6</h5>
             <div class="portlet__body">
               <div class="form-group row">
-                <label data-i18n="Enabled" for="Ipv6Enable" class="col-sm-2">Enabled</label>
-                <div class="col-sm-10">
+                <label data-i18n="Enabled" for="Ipv6Enable" class="col-sm-3">Enabled</label>
+                <div class="col-sm-9">
                   <input type="checkbox" class="form-check-inline" style="margin-top: 5px" id="Ipv6Enable"
                     name="Ipv6Enable" checked />
                 </div>
               </div>
 
               <div class="form-group row">
-                <label data-i18n="Get IP method" for="Ipv6Url" class="col-sm-2 col-form-label">
+                <label data-i18n="Get IP method" for="Ipv6Url" class="col-sm-3 col-form-label">
                   Get IP method
                 </label>
-                <div class="col-sm-10">
+                <div class="col-sm-9">
                   <div class="form-check form-check-inline">
                     <input class="form-check-input" type="radio" name="Ipv6GetType" id="urlRadioIpv6" value="url"
                       checked />
@@ -261,16 +261,16 @@
               </div>
 
               <div class="form-group row" id="Ipv6RegDiv" data-visible="netInterface" style="display: none">
-                <label data-i18n="Regular exp." for="Ipv6Reg" class="col-sm-2 col-form-label">Regular exp.</label>
-                <div class="col-sm-10">
+                <label data-i18n="Regular exp." for="Ipv6Reg" class="col-sm-3 col-form-label">Regular exp.</label>
+                <div class="col-sm-9">
                   <input class="form-control form" name="Ipv6Reg" id="Ipv6Reg" aria-describedby="Ipv6RegHelp" />
                   <small data-i18n-html="regHelp" id="Ipv6RegHelp" class="form-text text-muted"></small>
                 </div>
               </div>
 
               <div class="form-group row">
-                <label for="Ipv6Domains" class="col-sm-2 col-form-label">Domains</label>
-                <div class="col-sm-10">
+                <label for="Ipv6Domains" class="col-sm-3 col-form-label">Domains</label>
+                <div class="col-sm-9">
                   <textarea class="form-control form" id="Ipv6Domains" name="Ipv6Domains" rows="3"
                     aria-describedby="ipv6_domainsHelp"></textarea>
                   <small data-i18n-html="domainsHelp" id="ipv6_domainsHelp" class="form-text text-muted"></small>
@@ -285,9 +285,9 @@
             <h5 data-i18n="Others" class="portlet__head">Others</h5>
             <div class="portlet__body">
               <div class="form-group row">
-                <label data-i18n="Deny from WAN" for="NotAllowWanAccess" class="col-sm-2 col-form-label">Deny from
+                <label data-i18n="Deny from WAN" for="NotAllowWanAccess" class="col-sm-3 col-form-label">Deny from
                   WAN</label>
-                <div class="col-sm-10">
+                <div class="col-sm-9">
                   <input type="checkbox" class="form-check-inline" style="margin-top: 5px" id="NotAllowWanAccess"
                     name="NotAllowWanAccess" {{if .NotAllowWanAccess}}checked{{end}} />
                   <small data-i18n-html="NotAllowWanAccessHelp" id="NotAllowWanAccessHelp"
@@ -296,8 +296,8 @@
               </div>
 
               <div class="form-group row">
-                <label data-i18n="Username" for="Username" class="col-sm-2 col-form-label">Username</label>
-                <div class="col-sm-10">
+                <label data-i18n="Username" for="Username" class="col-sm-3 col-form-label">Username</label>
+                <div class="col-sm-9">
                   <input class="form-control form" name="Username" id="Username" value="{{.Username}}"
                     autocomplete="username" aria-describedby="UsernameHelp" />
                   <small data-i18n-html="accountHelp" id="UsernameHelp" class="form-text text-muted"></small>
@@ -305,8 +305,8 @@
               </div>
 
               <div class="form-group row">
-                <label data-i18n="Password" for="Password" class="col-sm-2 col-form-label">Password</label>
-                <div class="col-sm-10">
+                <label data-i18n="Password" for="Password" class="col-sm-3 col-form-label">Password</label>
+                <div class="col-sm-9">
                   <input class="form-control form" type="password" name="Password" id="Password"
                     autocomplete="new-password" aria-describedby="passwordHelp" />
                   <small data-i18n-html="passwordHelp" id="passwordHelp" class="form-text text-muted"></small>
@@ -319,8 +319,8 @@
             <h5 class="portlet__head">Webhook</h5>
             <div class="portlet__body">
               <div class="form-group row">
-                <label for="WebhookURL" class="col-sm-2 col-form-label">URL</label>
-                <div class="col-sm-10">
+                <label for="WebhookURL" class="col-sm-3 col-form-label">URL</label>
+                <div class="col-sm-9">
                   <input class="form-control form" name="WebhookURL" id="WebhookURL" value="{{.WebhookURL}}"
                     aria-describedby="WebhookURLHelp" />
                   <small data-i18n-html="WebhookURLHelp" id="WebhookURLHelp" class="form-text text-muted"></small>
@@ -328,8 +328,8 @@
               </div>
 
               <div class="form-group row">
-                <label for="WebhookRequestBody" class="col-sm-2 col-form-label">RequestBody</label>
-                <div class="col-sm-10">
+                <label for="WebhookRequestBody" class="col-sm-3 col-form-label">RequestBody</label>
+                <div class="col-sm-9">
                   <textarea class="form-control form" id="WebhookRequestBody" name="WebhookRequestBody" rows="3"
                     aria-describedby="WebhookRequestBodyHelp">{{.WebhookRequestBody}}</textarea>
                   <small data-i18n-html="WebhookRequestBodyHelp" id="WebhookRequestBodyHelp"
@@ -338,8 +338,8 @@
               </div>
 
               <div class="form-group row">
-                <label for="WebhookHeaders" class="col-sm-2 col-form-label">Headers</label>
-                <div class="col-sm-10">
+                <label for="WebhookHeaders" class="col-sm-3 col-form-label">Headers</label>
+                <div class="col-sm-9">
                   <textarea class="form-control form" id="WebhookHeaders" name="WebhookHeaders" rows="1"
                     aria-describedby="WebhookHeadersHelp">{{.WebhookHeaders}}</textarea>
                   <small data-i18n-html="WebhookHeadersHelp" id="WebhookHeadersHelp"
@@ -348,8 +348,8 @@
               </div>
 
               <div class="form-group row">
-                <label class="col-sm-2 col-form-label"></label>
-                <div class="col-sm-10">
+                <label class="col-sm-3 col-form-label"></label>
+                <div class="col-sm-9">
                   <button data-i18n="Try it" class="webhook-button btn btn-primary btn-sm" id="webhookTestBtn"
                     data-toggle="tooltip" data-i18n-attr="title:webhookTestTooltip">
                     Try it
@@ -363,8 +363,8 @@
             <h5 data-i18n="Email Notification" class="portlet__head">Email Notification</h5>
             <div class="portlet__body">
               <div class="form-group row">
-                <label data-i18n="Enable Email" for="EmailEnable" class="col-sm-2 col-form-label">Enable Email</label>
-                <div class="col-sm-10">
+                <label data-i18n="Enable Email" for="EmailEnable" class="col-sm-3 col-form-label">Enable Email</label>
+                <div class="col-sm-9">
                   <input type="checkbox" class="form-check-inline" style="margin-top: 5px" id="EmailEnable"
                     name="EmailEnable" {{if .Email.Enable}}checked{{end}} />
                   <small data-i18n-html="EmailEnableHelp" id="EmailEnableHelp" class="form-text text-muted"></small>
@@ -372,8 +372,8 @@
               </div>
 
               <div class="form-group row">
-                <label data-i18n="SMTP Server" for="EmailSMTPHost" class="col-sm-2 col-form-label">SMTP Server</label>
-                <div class="col-sm-10">
+                <label data-i18n="SMTP Server" for="EmailSMTPHost" class="col-sm-3 col-form-label">SMTP Server</label>
+                <div class="col-sm-9">
                   <div class="input-group">
                     <input class="form-control form" name="EmailSMTPHost" id="EmailSMTPHost" value="{{.Email.SMTPHost}}"
                       placeholder="smtp.qq.com" aria-describedby="EmailSMTPHelp" />
@@ -386,8 +386,8 @@
               </div>
 
               <div class="form-group row">
-                <label data-i18n="Encryption" for="EmailEncrypt" class="col-sm-2 col-form-label">Encryption</label>
-                <div class="col-sm-10">
+                <label data-i18n="Encryption" for="EmailEncrypt" class="col-sm-3 col-form-label">Encryption</label>
+                <div class="col-sm-9">
                   <select class="form-control form" name="EmailEncrypt" id="EmailEncrypt">
                     <option value="ssl" {{if or (eq .Email.Encrypt "ssl") (and (eq .Email.Encrypt "") (ne .Email.SMTPPort 587) (ne .Email.SMTPPort 25))}}selected{{end}}>SSL / 隐式 TLS (465)
                     </option>
@@ -399,9 +399,9 @@
               </div>
 
               <div class="form-group row">
-                <label data-i18n="SMTP Username" for="EmailUsername" class="col-sm-2 col-form-label">SMTP
+                <label data-i18n="SMTP Username" for="EmailUsername" class="col-sm-3 col-form-label">SMTP
                   Username</label>
-                <div class="col-sm-10">
+                <div class="col-sm-9">
                   <input class="form-control form" name="EmailUsername" id="EmailUsername" value="{{.Email.Username}}"
                     placeholder="you@example.com" autocomplete="off" aria-describedby="EmailAuthHelp" />
                   <small data-i18n-html="EmailAuthHelp" id="EmailAuthHelp" class="form-text text-muted"></small>
@@ -409,9 +409,9 @@
               </div>
 
               <div class="form-group row">
-                <label data-i18n="SMTP Password" for="EmailPassword" class="col-sm-2 col-form-label">SMTP
+                <label data-i18n="SMTP Password" for="EmailPassword" class="col-sm-3 col-form-label">SMTP
                   Password</label>
-                <div class="col-sm-10">
+                <div class="col-sm-9">
                   <input class="form-control form" type="password" name="EmailPassword" id="EmailPassword"
                     autocomplete="new-password" {{if .Email.Password}}placeholder="已保存，留空表示不修改"{{end}} />
                   <small data-i18n-html="EmailPasswordHelp" id="EmailPasswordHelp"
@@ -420,8 +420,8 @@
               </div>
 
               <div class="form-group row">
-                <label data-i18n="From" for="EmailFrom" class="col-sm-2 col-form-label">From</label>
-                <div class="col-sm-10">
+                <label data-i18n="From" for="EmailFrom" class="col-sm-3 col-form-label">From</label>
+                <div class="col-sm-9">
                   <input class="form-control form" name="EmailFrom" id="EmailFrom" value="{{.Email.From}}"
                     placeholder="ddns-go <you@example.com>" aria-describedby="EmailFromHelp" />
                   <small data-i18n-html="EmailFromHelp" id="EmailFromHelp" class="form-text text-muted"></small>
@@ -429,8 +429,8 @@
               </div>
 
               <div class="form-group row">
-                <label data-i18n="To" for="EmailTo" class="col-sm-2 col-form-label">To</label>
-                <div class="col-sm-10">
+                <label data-i18n="To" for="EmailTo" class="col-sm-3 col-form-label">To</label>
+                <div class="col-sm-9">
                   <input class="form-control form" name="EmailTo" id="EmailTo" value="{{.Email.To}}"
                     placeholder="a@example.com, b@example.com" aria-describedby="EmailToHelp" />
                   <small data-i18n-html="EmailToHelp" id="EmailToHelp" class="form-text text-muted"></small>
@@ -438,9 +438,9 @@
               </div>
 
               <div class="form-group row">
-                <label data-i18n="Notify on start" for="EmailOnStart" class="col-sm-2 col-form-label">Notify on
+                <label data-i18n="Notify on start" for="EmailOnStart" class="col-sm-3 col-form-label">Notify on
                   start</label>
-                <div class="col-sm-10">
+                <div class="col-sm-9">
                   <input type="checkbox" class="form-check-inline" style="margin-top: 5px" id="EmailOnStart"
                     name="EmailOnStart" {{if .Email.OnStart}}checked{{end}} />
                   <small data-i18n-html="EmailOnStartHelp" id="EmailOnStartHelp" class="form-text text-muted"></small>
@@ -449,8 +449,8 @@
 
               <div class="form-group row">
                 <label data-i18n="Alert on fetch failure" for="EmailAlertOnFetchFailure"
-                  class="col-sm-2 col-form-label">Alert on fetch failure</label>
-                <div class="col-sm-10">
+                  class="col-sm-3 col-form-label">Alert on fetch failure</label>
+                <div class="col-sm-9">
                   <input type="checkbox" class="form-check-inline" style="margin-top: 5px"
                     id="EmailAlertOnFetchFailure" name="EmailAlertOnFetchFailure"
                     {{if .Email.AlertOnFetchFailure}}checked{{end}} />
@@ -460,34 +460,36 @@
               </div>
 
               <div class="form-group row">
-                <label class="col-sm-2 col-form-label"></label>
-                <div class="col-sm-10">
+                <label class="col-sm-3 col-form-label"></label>
+                <div class="col-sm-9">
                   <button data-i18n="Send test email" type="button" class="btn btn-primary btn-sm" id="emailTestBtn">
                     Send test email
                   </button>
+                  <small class="form-text text-muted" id="emailTestResult"></small>
                 </div>
               </div>
 
               <div class="form-group row">
-                <label data-i18n="History" class="col-sm-2 col-form-label">History</label>
-                <div class="col-sm-10">
-                  <div class="form-text text-muted" id="emailHistory">
-                    {{if .EmailHistory.Recent}}
-                    <div>
-                      <span data-i18n="Last notification">Last notification</span>: {{.EmailHistory.LastTime}}
-                      &nbsp;·&nbsp;
-                      <span data-i18n="Total records">Total</span>: {{.EmailHistory.Total}}
-                    </div>
-                    <ul class="mb-0" style="padding-left: 1.2em">
-                      {{range .EmailHistory.Recent}}
-                      <li>{{.TimeText}} · {{.KindText}}{{if .IPv4}} · IPv4 {{.IPv4}}
-                        → {{if .PrevIPv4}}{{.PrevIPv4}}{{else}}-{{end}}{{end}}</li>
-                      {{end}}
-                    </ul>
-                    {{else}}
-                    <span data-i18n="No history yet">No history yet</span>
-                    {{end}}
+                <label data-i18n="Status" class="col-sm-3 col-form-label">Status</label>
+                <div class="col-sm-9">
+                  <div class="form-text text-muted" id="emailStatus">
+                    <span data-i18n="Loading status...">Loading status...</span>
                   </div>
+                </div>
+              </div>
+
+              <div class="form-group row">
+                <label data-i18n="History" class="col-sm-3 col-form-label">History</label>
+                <div class="col-sm-9">
+                  <div class="form-text text-muted" id="emailHistory">
+                    <span data-i18n="No history yet">No history yet</span>
+                  </div>
+                  <button type="button" class="btn btn-outline-secondary btn-sm" id="emailRefreshBtn">
+                    <span data-i18n="Refresh">Refresh</span>
+                  </button>
+                  <button type="button" class="btn btn-outline-danger btn-sm" id="emailClearHistoryBtn">
+                    <span data-i18n="Clear history">Clear history</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -498,7 +500,7 @@
           Save
         </button>
       </div>
-      <div class="logs-panel col-md-6 offset-md-3" style="visibility: hidden" id="logs-panel">
+      <div class="logs-panel col-md-10 offset-md-1" style="visibility: hidden" id="logs-panel">
         <textarea class="logs form-control" id="logs" readonly></textarea>
         <button data-i18n="Clear" type="button" class="btn btn-danger btn-sm" id="clearLogBtn">
           Clear
@@ -796,7 +798,7 @@
       if (resp.result !== "ok") {
         $langSelect.value = previousLang;
         showMessage({
-          content: resp.result,
+          content: friendlyError(resp.result),
           type: "error",
           duration: 5000,
         });
@@ -808,7 +810,7 @@
     } catch (err) {
       $langSelect.value = previousLang;
       showMessage({
-        content: err.toString(),
+        content: friendlyError(err),
         type: "error",
         duration: 5000,
       });
@@ -874,7 +876,7 @@
         });
         if (resp.result !== "ok") {
           showMessage({
-            content: resp.result,
+            content: friendlyError(resp.result),
             type: "error",
             duration: 5000,
           });
@@ -890,7 +892,7 @@
           reloadConf(resp.dnsConf);
         }
       } catch (err) {
-        alert(`${err.toString()}`);
+        alert(friendlyError(err));
       }
     });
   });
@@ -919,7 +921,7 @@
       logsList = resp;
     } catch (err) {
       showMessage({
-        content: err.toString(),
+        content: friendlyError(err),
         type: "error",
         duration: 5000,
       });
@@ -995,7 +997,7 @@
       getLogs();
     } catch (err) {
       showMessage({
-        content: err.toString(),
+        content: friendlyError(err),
         type: "error",
         duration: 5000,
       });
@@ -1046,18 +1048,208 @@
       });
     } catch (err) {
       showMessage({
-        content: err.toString(),
+        content: friendlyError(err),
         type: "error",
         duration: 5000,
       });
     }
   });
 
+  // 把后端/网关返回的内容清洗成一行可读的错误信息
+  // （接口 502/504 时可能返回整页 HTML，直接塞进提示条会糊满屏幕）
+  function friendlyError(raw) {
+    let msg = String(raw === undefined || raw === null ? "" : raw);
+    const title = msg.match(/<title>([^<]*)<\/title>/i) || msg.match(/<h1>([^<]*)<\/h1>/i);
+    if (title) {
+      msg = title[1];
+    } else {
+      msg = msg.replace(/<[^>]*>/g, " ");
+    }
+    msg = msg.replace(/\s+/g, " ").trim();
+    if (msg.length > 200) {
+      msg = msg.slice(0, 200) + "…";
+    }
+    return msg || i18n({ "en": "Request failed", "zh-cn": "请求失败" });
+  }
+
+  // 相对时间：刚刚 / N 分钟前 / N 小时前
+  function relativeTime(unixSeconds) {
+    if (!unixSeconds) return i18n({ "en": "never", "zh-cn": "从未" });
+    const diff = Math.max(0, Math.floor(Date.now() / 1000) - unixSeconds);
+    if (diff < 60) return i18n({ "en": "just now", "zh-cn": "刚刚" });
+    if (diff < 3600) {
+      return i18n({ "en": Math.floor(diff / 60) + " min ago", "zh-cn": Math.floor(diff / 60) + " 分钟前" });
+    }
+    if (diff < 86400) {
+      return i18n({ "en": Math.floor(diff / 3600) + " h ago", "zh-cn": Math.floor(diff / 3600) + " 小时前" });
+    }
+    return i18n({ "en": Math.floor(diff / 86400) + " d ago", "zh-cn": Math.floor(diff / 86400) + " 天前" });
+  }
+
+  function absoluteTime(unixSeconds) {
+    if (!unixSeconds) return "-";
+    const d = new Date(unixSeconds * 1000);
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  }
+
+  // 直到下次检测的倒计时（秒）
+  function secondsToNextCheck(status) {
+    if (!status.lastRunAt || !status.intervalSeconds) return null;
+    return status.lastRunAt + status.intervalSeconds - Math.floor(Date.now() / 1000);
+  }
+
+  const BADGE_STYLE = {
+    change: "background:#1f6feb;color:#fff",
+    baseline: "background:#6e7681;color:#fff",
+    fetch_failed: "background:#b62324;color:#fff",
+    recovered: "background:#1a7f37;color:#fff",
+  };
+
+  const KIND_LABEL = {
+    baseline: { "en": "baseline", "zh-cn": "首次基线" },
+    change: { "en": "IP changed", "zh-cn": "IP 变更" },
+    fetch_failed: { "en": "fetch failed", "zh-cn": "获取失败" },
+    recovered: { "en": "recovered", "zh-cn": "获取已恢复" },
+  };
+
+  function kindText(kind) {
+    const label = KIND_LABEL[kind];
+    return label ? i18n(label) : kind;
+  }
+
+  function kindBadge(entry) {
+    const style = BADGE_STYLE[entry.kind] || "background:#6e7681;color:#fff";
+    return `<span style="display:inline-block;padding:0 6px;border-radius:3px;font-size:12px;${style}">${kindText(entry.kind)}</span>`;
+  }
+
+  let emailStatusCache = null;
+  let emailStatusTimer = null;
+
+  function renderEmailStatus(status) {
+    const el = document.getElementById("emailStatus");
+    if (!el) return;
+    const lines = [];
+    const ipText = [status.ipv4, status.ipv6].filter(Boolean).join(" / ") ||
+      i18n({ "en": "not yet detected", "zh-cn": "尚未检测到" });
+    lines.push(`<div><strong>${i18n({ "en": "Current IP", "zh-cn": "当前 IP" })}:</strong> ${ipText}</div>`);
+
+    const lastCheck = status.lastRunAt
+      ? `${absoluteTime(status.lastRunAt)}（${relativeTime(status.lastRunAt)}）`
+      : i18n({ "en": "not yet run", "zh-cn": "尚未执行" });
+    lines.push(`<div><strong>${i18n({ "en": "Last check", "zh-cn": "上次检测" })}:</strong> ${lastCheck}</div>`);
+
+    const left = secondsToNextCheck(status);
+    if (left !== null) {
+      const text = left > 0
+        ? i18n({ "en": `in ${left}s`, "zh-cn": `${left} 秒后` })
+        : i18n({ "en": "due now", "zh-cn": "即将执行" });
+      lines.push(`<div><strong>${i18n({ "en": "Next check", "zh-cn": "下次检测" })}:</strong> ${text}` +
+        ` <span class="text-muted">(${i18n({ "en": "every", "zh-cn": "每" })} ${status.intervalSeconds}s)</span></div>`);
+    }
+
+    const lastMail = status.lastSent
+      ? `${absoluteTime(status.lastSent)}（${relativeTime(status.lastSent)}）`
+      : i18n({ "en": "no email sent yet", "zh-cn": "尚未发送过邮件" });
+    lines.push(`<div><strong>${i18n({ "en": "Last notification", "zh-cn": "上次通知" })}:</strong> ${lastMail}</div>`);
+
+    lines.push(`<div><strong>${i18n({ "en": "Total records", "zh-cn": "历史记录" })}:</strong> ${status.historyTotal}</div>`);
+
+    if (!status.emailEnabled) {
+      lines.push(`<div class="text-warning">${i18n({ "en": "Email notification is disabled", "zh-cn": "邮件通知当前未启用" })}</div>`);
+    }
+    el.innerHTML = lines.join("");
+  }
+
+  function renderEmailHistory(status) {
+    const el = document.getElementById("emailHistory");
+    if (!el) return;
+    const recent = (status && status.recent) || [];
+    if (!recent.length) {
+      el.innerHTML = `<span>${i18n({ "en": "No history yet", "zh-cn": "暂无通知记录" })}</span>`;
+      return;
+    }
+    const items = recent.map((entry) => {
+      const ip = entry.ipv4
+        ? ` · IPv4 ${entry.ipv4}${entry.prevIpv4 ? " ← " + entry.prevIpv4 : ""}`
+        : (entry.ipv6 ? ` · IPv6 ${entry.ipv6}${entry.prevIpv6 ? " ← " + entry.prevIpv6 : ""}` : "");
+      return `<li style="margin:2px 0">${absoluteTime(entry.time)} ${kindBadge(entry)}${ip}</li>`;
+    }).join("");
+    el.innerHTML = `<ul class="mb-1" style="padding-left:1.2em">${items}</ul>`;
+  }
+
+  async function refreshEmailPanel() {
+    try {
+      const status = await request.get("./emailStatus");
+      if (!status || typeof status !== "object" || status.Code) {
+        throw new Error(friendlyError(status && status.Msg ? status.Msg : "emailStatus 返回异常"));
+      }
+      emailStatusCache = status;
+      renderEmailStatus(status);
+      renderEmailHistory(status);
+    } catch (err) {
+      const el = document.getElementById("emailStatus");
+      if (el) el.innerHTML = `<span class="text-danger">${friendlyError(err)}</span>`;
+    }
+  }
+
+  // 每 5 秒刷新状态面板（倒计时需要每秒更新，状态数据 5 秒拉一次）
+  function startEmailStatusPolling() {
+    refreshEmailPanel();
+    if (emailStatusTimer) clearInterval(emailStatusTimer);
+    let tick = 0;
+    emailStatusTimer = setInterval(() => {
+      if (emailStatusCache) renderEmailStatus(emailStatusCache);
+      if (++tick % 5 === 0) refreshEmailPanel();
+    }, 1000);
+  }
+
+  const $emailRefresh = document.getElementById("emailRefreshBtn");
+  if ($emailRefresh) {
+    $emailRefresh.addEventListener('click', async (e) => {
+      e.preventDefault();
+      await refreshEmailPanel();
+    });
+  }
+
+  const $emailClear = document.getElementById("emailClearHistoryBtn");
+  if ($emailClear) {
+    $emailClear.addEventListener('click', async (e) => {
+      e.preventDefault();
+      if (!confirm(i18n({
+        "en": "Clear all notification history?",
+        "zh-cn": "确定要清空全部通知历史吗？",
+      }))) return;
+      try {
+        const resp = await request.post("./emailHistoryClear", {});
+        if (resp && resp.ok) {
+          showMessage({
+            content: i18n({ "en": "History cleared", "zh-cn": "历史记录已清空" }),
+            type: "success",
+          });
+          await refreshEmailPanel();
+        } else {
+          showMessage({
+            content: friendlyError(resp && resp.msg ? resp.msg : resp),
+            type: "error",
+            duration: 6000,
+          });
+        }
+      } catch (err) {
+        showMessage({ content: friendlyError(err), type: "error", duration: 6000 });
+      }
+    });
+  }
+
+  startEmailStatusPolling();
+
   // 发送测试邮件
   document.getElementById("emailTestBtn").addEventListener('click', async e => {
     e.preventDefault();
     const $btn = e.target;
+    const $result = document.getElementById("emailTestResult");
     $btn.disabled = true;
+    if ($result) $result.textContent = i18n({ "en": "sending…", "zh-cn": "发送中…" });
     try {
       const resp = await request.post("./emailTest", {
         Enable: globalConf.EmailEnable,
@@ -1070,6 +1262,10 @@
         Encrypt: globalConf.EmailEncrypt,
       });
       if (resp && resp.ok) {
+        if ($result) $result.textContent = i18n({
+          "en": `last test: success · ${absoluteTime(Math.floor(Date.now() / 1000))}`,
+          "zh-cn": `上次测试：成功 · ${absoluteTime(Math.floor(Date.now() / 1000))}`,
+        });
         showMessage({
           content: i18n({
             "en": "Test email sent, please check the inbox (and the spam folder)",
@@ -1079,8 +1275,13 @@
           duration: 5000,
         });
       } else {
+        const msg = friendlyError(resp && resp.msg ? resp.msg : resp);
+        if ($result) $result.textContent = i18n({
+          "en": `last test: failed · ${msg}`,
+          "zh-cn": `上次测试：失败 · ${msg}`,
+        });
         showMessage({
-          content: (resp && resp.msg) || i18n({
+          content: msg || i18n({
             "en": "Failed to send the test email",
             "zh-cn": "测试邮件发送失败",
           }),
@@ -1089,10 +1290,15 @@
         });
       }
     } catch (err) {
+      const msg = friendlyError(err);
+      if ($result) $result.textContent = i18n({
+        "en": `last test: failed · ${msg}`,
+        "zh-cn": `上次测试：失败 · ${msg}`,
+      });
       showMessage({
-        content: err.toString(),
+        content: msg,
         type: "error",
-        duration: 5000,
+        duration: 6000,
       });
     } finally {
       $btn.disabled = false;

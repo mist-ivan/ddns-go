@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -60,7 +61,11 @@ lang: zh
 		`value="you@example.com"`,
 		`id="emailTestBtn"`,
 		`id="EmailAlertOnFetchFailure"`,
+		`id="emailStatus"`,
 		`id="emailHistory"`,
+		`id="emailRefreshBtn"`,
+		`id="emailClearHistoryBtn"`,
+		`id="emailTestResult"`,
 	}
 	for _, want := range checks {
 		if !strings.Contains(body, want) {
@@ -78,9 +83,12 @@ lang: zh
 	if !strings.Contains(body, "checked") {
 		t.Fatal("EmailEnable / EmailOnStart should render as checked")
 	}
-	// 历史记录应渲染出预置的那条
-	if !strings.Contains(body, "2.2.2.2") || !strings.Contains(body, "IP 变更") {
-		t.Fatal("email history entry should be rendered in the page")
+	// 状态面板与历史由前端异步渲染：页面里应有容器和轮询接口路径
+	if !strings.Contains(body, "./emailStatus") {
+		t.Fatal("page should poll ./emailStatus for the status panel")
+	}
+	if !strings.Contains(body, "./emailHistoryClear") {
+		t.Fatal("page should reference ./emailHistoryClear")
 	}
 }
 
@@ -153,5 +161,33 @@ lang: zh
 	}
 	if strings.Contains(text, "V3ry-Str0ng-Passphrase!2026") {
 		t.Fatal("user password must be hashed, not stored in plain text")
+	}
+}
+
+// 状态接口应返回状态面板需要的字段
+func TestEmailStatusEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("dnsconf: []\nuser:\n    username: admin\n    password: \"\"\nlang: zh\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(util.ConfigFilePathENV, cfgPath)
+	config.ResetConfigCache()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/emailStatus", nil)
+	HandleEmailStatus(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status code = %d", rec.Code)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("response is not valid json: %v (body=%s)", err, rec.Body.String())
+	}
+	for _, key := range []string{"ipv4", "ipv6", "lastSent", "lastRunAt", "intervalSeconds", "historyTotal", "recent", "emailEnabled"} {
+		if _, ok := payload[key]; !ok {
+			t.Fatalf("status payload missing %q: %s", key, rec.Body.String())
+		}
 	}
 }

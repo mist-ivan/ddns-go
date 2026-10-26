@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jeessy2/ddns-go/v6/config"
@@ -43,7 +44,23 @@ var (
 	// runOnceMu 串行化 RunOnce：定时器与“保存配置后立即执行”可能同时触发，
 	// 并发运行会让邮件状态判断重复、Ipcache 竞争。
 	runOnceMu sync.Mutex
+
+	// lastRunUnix 最近一次检测完成的时间（unix 秒），供页面状态面板展示
+	lastRunUnix atomic.Int64
+	// intervalSec 配置的检测间隔（秒）
+	intervalSec atomic.Int64
 )
+
+// SetInterval 记录检测间隔，供页面计算“下次检测”时间
+func SetInterval(d time.Duration) {
+	intervalSec.Store(int64(d.Seconds()))
+}
+
+// LastRunAt 返回最近一次检测完成的时间（unix 秒），0 表示尚未执行过
+func LastRunAt() int64 { return lastRunUnix.Load() }
+
+// IntervalSeconds 返回配置的检测间隔（秒），未知时为 0
+func IntervalSeconds() int64 { return intervalSec.Load() }
 
 // RunTimer 定时运行
 func RunTimer(delay time.Duration) {
@@ -57,6 +74,7 @@ func RunTimer(delay time.Duration) {
 func RunOnce() {
 	runOnceMu.Lock()
 	defer runOnceMu.Unlock()
+	defer lastRunUnix.Store(time.Now().Unix())
 
 	conf, err := config.GetConfigCached()
 	if err != nil {

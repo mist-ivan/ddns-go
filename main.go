@@ -177,6 +177,9 @@ func run() {
 	// 等待网络连接
 	util.WaitInternet(dns.Addresses)
 
+	// 记录检测间隔，供页面展示"下次检测"时间
+	dns.SetInterval(time.Duration(*every) * time.Second)
+
 	// 定时运行
 	dns.RunTimer(time.Duration(*every) * time.Second)
 }
@@ -203,6 +206,8 @@ func runWebServer() error {
 	http.HandleFunc("/clearLog", web.Auth(web.ClearLog))
 	http.HandleFunc("/webhookTest", web.Auth(web.WebhookTest))
 	http.HandleFunc("/emailTest", web.Auth(web.EmailTest))
+	http.HandleFunc("/emailStatus", web.Auth(web.HandleEmailStatus))
+	http.HandleFunc("/emailHistoryClear", web.Auth(web.HandleEmailHistoryClear))
 	http.HandleFunc("/logout", web.Auth(web.Logout))
 
 	util.Log("监听 %s", *listen)
