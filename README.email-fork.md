@@ -4,7 +4,7 @@
 新增「公网 IP 变更时发送邮件提醒」功能。其余行为与原版一致。
 
 - 源码：`/home/mist/work/ddns-go`（分支 `master`，提交 `0ea105f`）
-- 镜像：`ddns-go-email:6.17.7-email.3`（40.3 MB，多阶段构建）
+- 镜像：`ddns-go-email:6.17.7-email.3`（约 40 MB，多阶段构建）
 - 测试：`/home/mist/work/test`（假 SMTP + 假回调，可随时重跑）
 
 ## 与原版的差异
