@@ -224,8 +224,12 @@ func (e *Email) Validate() error {
 	if port == 0 {
 		port = 465
 	}
-	if _, err := normalizeEncrypt(e.Encrypt, port); err != nil {
+	encrypt, err := normalizeEncrypt(e.Encrypt, port)
+	if err != nil {
 		return err
+	}
+	if e.Username != "" && encrypt == "none" && !isLocalhost(host) {
+		return errors.New("拒绝在未加密的 SMTP 连接上发送账号密码，请改用 SSL 或 STARTTLS")
 	}
 
 	from := strings.TrimSpace(e.From)

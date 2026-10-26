@@ -142,6 +142,24 @@ func TestEmailValidate(t *testing.T) {
 	if err := displayName.Validate(); err != nil {
 		t.Fatalf("display-name address rejected: %v", err)
 	}
+
+	// 非 localhost 的明文连接不允许携带 SMTP 凭据
+	plain := &Email{
+		SMTPHost: "smtp.x.com", SMTPPort: 25, To: "a@x.com", From: "b@x.com",
+		Username: "user@x.com", Password: "secret", Encrypt: "none",
+	}
+	if err := plain.Validate(); err == nil {
+		t.Fatal("cleartext SMTP auth should be rejected")
+	}
+
+	// localhost 的明文连接只用于本地测试，允许
+	local := &Email{
+		SMTPHost: "127.0.0.1", SMTPPort: 2525, To: "a@x.com", From: "b@x.com",
+		Username: "user@x.com", Password: "secret", Encrypt: "none",
+	}
+	if err := local.Validate(); err != nil {
+		t.Fatalf("localhost cleartext test config rejected: %v", err)
+	}
 }
 
 // --- 状态持久化 ---
