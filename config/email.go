@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/mail"
 	"net/smtp"
+	"net/textproto"
 	"os"
 	"sort"
 	"strconv"
@@ -117,7 +118,8 @@ func (a *loginAuth) Next(fromServer []byte, more bool) ([]byte, error) {
 	}
 }
 
-// smtpAuthError 标记“认证阶段”的错误，只有这类错误才值得换一种 AUTH 机制重试。
+// smtpAuthError 标记“服务端不支持当前 AUTH 机制”的错误，只有这类错误才值得换一种方式重试。
+// 凭据被拒（535）不算——反复重试只会累加失败次数，可能把邮箱账号锁掉。
 type smtpAuthError struct {
 	err error
 }
@@ -128,6 +130,28 @@ func (e *smtpAuthError) Unwrap() error { return e.err }
 func isAuthError(err error) bool {
 	var authErr *smtpAuthError
 	return errors.As(err, &authErr)
+}
+
+// isAuthMechanismUnsupported 判断服务端是否只是不认识/不接受当前的 AUTH 机制。
+// 只有这种情况才值得换一种机制重试；凭据错误（535）或账号状态问题应当直接失败。
+func isAuthMechanismUnsupported(err error) bool {
+	var tpErr *textproto.Error
+	if errors.As(err, &tpErr) {
+		switch tpErr.Code {
+		case 500, 501, 504, 534: // 语法错误 / 不支持的认证机制
+			return true
+		case 530, 535, 538: // 需要认证 / 凭据错误 / 加密不足
+			return false
+		}
+	}
+
+	msg := strings.ToLower(err.Error())
+	for _, keyword := range []string{"unrecognized", "not supported", "unsupported", "authentication mechanism"} {
+		if strings.Contains(msg, keyword) {
+			return true
+		}
+	}
+	return false
 }
 
 // normalizeSMTPHost 去掉 IPv6 字面量外层的方括号，便于 JoinHostPort/证书校验。
@@ -345,7 +369,10 @@ func (e *Email) deliver(addr, host, encrypt string, auth smtp.Auth, from string,
 	if auth != nil {
 		if ok, _ := client.Extension("AUTH"); ok {
 			if err = client.Auth(auth); err != nil {
-				return false, &smtpAuthError{err: err}
+				if isAuthMechanismUnsupported(err) {
+					return false, &smtpAuthError{err: err}
+				}
+				return false, fmt.Errorf("SMTP 认证被拒绝: %w", err)
 			}
 		}
 	}
@@ -497,6 +524,14 @@ var (
 	fetchTracker   fetchFailureTracker
 )
 
+// markNotifiedNow 记录"刚刚发过通知"的时间戳，但不改动 IP 基线。
+// 告警/恢复这类通知也要反映到状态面板的"上次通知"上。
+func markNotifiedNow() {
+	state := loadEmailState()
+	state.LastSent = time.Now().Unix()
+	storeEmailState(state)
+}
+
 // handleFetchHealth 处理"取不到公网 IP"的告警与恢复通知。
 // 返回值表示本轮是否成功发出了"已恢复"通知（调用方据此避免重复发基线邮件）。
 func handleFetchHealth(conf *Config, status FetchStatus, ipv4, ipv6 string) bool {
@@ -523,6 +558,7 @@ func handleFetchHealth(conf *Config, status FetchStatus, ipv4, ipv6 string) bool
 			return false
 		}
 		AppendEmailHistory(EmailHistoryEntry{Kind: historyKindFetchFailed, IPv4: ipv4, IPv6: ipv6})
+		markNotifiedNow()
 		util.Log("邮件通知: 连续 %d 轮未能获取 IP, 已发送告警邮件", consecutive)
 	}
 
@@ -539,6 +575,7 @@ func handleFetchHealth(conf *Config, status FetchStatus, ipv4, ipv6 string) bool
 			return false
 		}
 		AppendEmailHistory(EmailHistoryEntry{Kind: historyKindRecovered, IPv4: ipv4, IPv6: ipv6})
+		markNotifiedNow()
 		util.Log("邮件通知: IP 获取已恢复, 已发送恢复通知")
 		return true
 	}

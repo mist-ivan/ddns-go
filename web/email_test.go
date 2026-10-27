@@ -240,3 +240,78 @@ lang: zh
 		t.Fatalf("password should have been cleared:\n%s", saved)
 	}
 }
+
+// 同时提交“清除密码”与新密码时，新密码必须生效（v0.7 修复）
+func TestSaveNewPasswordWinsOverClear(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	initial := `dnsconf: []
+user:
+    username: admin
+    password: ""
+email:
+    enable: false
+    smtphost: smtp.qq.com
+    password: old-secret
+    to: a@x.com
+lang: zh
+`
+	if err := os.WriteFile(cfgPath, []byte(initial), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(util.ConfigFilePathENV, cfgPath)
+	config.ResetConfigCache()
+
+	payload := `{
+      "Username": "admin",
+      "Password": "V3ry-Str0ng-Passphrase!2026",
+      "Lang": "zh",
+      "EmailEnable": false,
+      "EmailSMTPHost": "smtp.qq.com",
+      "EmailSMTPPort": "465",
+      "EmailPassword": "new-secret",
+      "EmailPasswordClear": true,
+      "EmailTo": "a@x.com",
+      "DnsConf": []
+    }`
+	rec := httptest.NewRecorder()
+	Save(rec, httptest.NewRequest("POST", "/save", strings.NewReader(payload)))
+
+	if !strings.Contains(rec.Body.String(), `"result":"ok"`) {
+		t.Fatalf("save failed: %s", rec.Body.String())
+	}
+	saved, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(saved), "password: new-secret") {
+		t.Fatalf("new password should win over the clear flag:\n%s", saved)
+	}
+}
+
+// 保存失败时不应该触发 DNS 检测/邮件检查（v0.7 修复）
+func TestSaveFailureSkipsRunOnce(t *testing.T) {
+	// 指向不存在的目录，SaveConfig 必然失败
+	t.Setenv(util.ConfigFilePathENV, filepath.Join(t.TempDir(), "missing-dir", "config.yaml"))
+	config.ResetConfigCache()
+
+	util.ForceCompareGlobal = false
+	defer func() { util.ForceCompareGlobal = false }()
+
+	payload := `{
+      "Username": "admin",
+      "Password": "V3ry-Str0ng-Passphrase!2026",
+      "Lang": "zh",
+      "EmailEnable": false,
+      "DnsConf": []
+    }`
+	rec := httptest.NewRecorder()
+	Save(rec, httptest.NewRequest("POST", "/save", strings.NewReader(payload)))
+
+	if strings.Contains(rec.Body.String(), `"result":"ok"`) {
+		t.Fatalf("save should have failed: %s", rec.Body.String())
+	}
+	if util.ForceCompareGlobal {
+		t.Fatal("RunOnce must not be triggered when saving fails")
+	}
+}

@@ -413,7 +413,8 @@
                   Password</label>
                 <div class="col-sm-9">
                   <input class="form-control form" type="password" name="EmailPassword" id="EmailPassword"
-                    autocomplete="new-password" {{if .Email.Password}}placeholder="已保存，留空表示不修改"{{end}} />
+                    autocomplete="new-password"
+                    {{if .Email.Password}}data-password-saved="1"{{end}} />
                   <small data-i18n-html="EmailPasswordHelp" id="EmailPasswordHelp"
                     class="form-text text-muted"></small>
                   {{if .Email.Password}}
@@ -939,6 +940,11 @@
             duration: 1500,
           });
           reloadConf(resp.dnsConf);
+          // 保存后配置/密码可能变化，立刻刷新一次状态面板与历史
+          if (typeof refreshEmailPanel === "function") {
+            globalConf.EmailPasswordClear = false;
+            refreshEmailPanel();
+          }
         }
       } catch (err) {
         alert(friendlyError(err));
@@ -1179,9 +1185,15 @@
     const el = document.getElementById("emailStatus");
     if (!el) return;
     const lines = [];
-    const ipText = [status.ipv4, status.ipv6].filter(Boolean).join(" / ") ||
+    // 区分"本轮实际检测到的 IP"和"上次成功通知的 IP"：
+    // 发信失败或只有告警时，后者会停留在旧值，直接标成"当前 IP"会误导。
+    const detectedText = [status.detectedIpv4, status.detectedIpv6].filter(Boolean).join(" / ") ||
       i18n({ "en": "not yet detected", "zh-cn": "尚未检测到" });
-    lines.push(`<div><strong>${i18n({ "en": "Current IP", "zh-cn": "当前 IP" })}:</strong> ${ipText}</div>`);
+    lines.push(`<div><strong>${i18n({ "en": "Detected IP", "zh-cn": "本轮检测 IP" })}:</strong> ${detectedText}</div>`);
+
+    const notifiedText = [status.ipv4, status.ipv6].filter(Boolean).join(" / ") ||
+      i18n({ "en": "none yet", "zh-cn": "尚无" });
+    lines.push(`<div><strong>${i18n({ "en": "Last notified IP", "zh-cn": "上次通知的 IP" })}:</strong> ${notifiedText}</div>`);
 
     const lastCheck = status.lastRunAt
       ? `${absoluteTime(status.lastRunAt)}（${relativeTime(status.lastRunAt)}）`
@@ -1259,6 +1271,24 @@
       e.preventDefault();
       await refreshEmailPanel();
     });
+  }
+
+  // 密码框：输入新密码即视为"不删除"，撤销之前的清除标记
+  const $emailPassword = document.getElementById("EmailPassword");
+  if ($emailPassword) {
+    $emailPassword.addEventListener('input', () => {
+      if ($emailPassword.value) {
+        globalConf.EmailPasswordClear = false;
+        const $hint = document.getElementById("emailClearPwdHint");
+        if ($hint) $hint.textContent = "";
+      }
+    });
+    if ($emailPassword.dataset.passwordSaved === "1") {
+      $emailPassword.placeholder = i18n({
+        "en": "saved — leave blank to keep it",
+        "zh-cn": "已保存，留空表示不修改",
+      });
+    }
   }
 
   const $emailClearPwd = document.getElementById("emailClearPwdBtn");

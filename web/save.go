@@ -84,12 +84,13 @@ func checkAndSave(request *http.Request) string {
 		}
 	}
 	conf.Email.Username = strings.TrimSpace(data.EmailUsername)
-	// 密码留空表示保持原值，避免前端回显明文
-	if data.EmailPasswordClear {
-		// 用户显式要求清除已保存的密码
-		conf.Email.Password = ""
-	} else if data.EmailPassword != "" {
+	// 密码留空表示保持原值，避免前端回显明文。
+	// 同时提交了"清除"标记和新密码时，以新密码为准（清除标记只是前端的临时状态）。
+	switch {
+	case data.EmailPassword != "":
 		conf.Email.Password = data.EmailPassword
+	case data.EmailPasswordClear:
+		conf.Email.Password = ""
 	}
 	conf.Email.From = strings.TrimSpace(data.EmailFrom)
 	conf.Email.To = strings.TrimSpace(data.EmailTo)
@@ -166,17 +167,15 @@ func checkAndSave(request *http.Request) string {
 	}
 	conf.DnsConf = dnsConfArray
 
-	// 保存到用户目录
-	err = conf.SaveConfig()
+	// 保存到用户目录。保存失败时直接返回，不触发检测：
+	// 否则界面提示保存失败，后台却已经用新配置跑了一轮（可能发信、改 DNS）。
+	if err = conf.SaveConfig(); err != nil {
+		return err.Error()
+	}
 
 	// 只运行一次
 	util.ForceCompareGlobal = true
 	go dns.RunOnce()
-
-	// 回写错误信息
-	if err != nil {
-		return err.Error()
-	}
 	return "ok"
 }
 

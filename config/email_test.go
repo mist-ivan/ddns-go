@@ -2,10 +2,12 @@ package config
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"os"
 	"path/filepath"
 	"strings"
@@ -859,5 +861,29 @@ func TestEmptyLangDefaultsToChinese(t *testing.T) {
 	}
 	if conf2.Lang != "en" {
 		t.Fatalf("explicit lang should be preserved, got %q", conf2.Lang)
+	}
+}
+
+// --- v0.7: AUTH 回退只在“机制不支持”时发生 ---
+
+func TestAuthMechanismUnsupported(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"504 未知机制", &textproto.Error{Code: 504, Msg: "unrecognized authentication type"}, true},
+		{"534 机制太弱", &textproto.Error{Code: 534, Msg: "authentication mechanism too weak"}, true},
+		{"501 语法", &textproto.Error{Code: 501, Msg: "syntax error"}, true},
+		{"535 凭据错误", &textproto.Error{Code: 535, Msg: "authentication failed"}, false},
+		{"530 需要认证", &textproto.Error{Code: 530, Msg: "authentication required"}, false},
+		{"文本 unrecognized", errors.New("server: unrecognized authentication type"), true},
+		{"文本凭据", errors.New("535 5.7.8 authentication failed"), false},
+	}
+
+	for _, tc := range cases {
+		if got := isAuthMechanismUnsupported(tc.err); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

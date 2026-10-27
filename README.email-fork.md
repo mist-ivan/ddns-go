@@ -4,8 +4,11 @@
 新增「公网 IP 变更时发送邮件提醒」功能。其余行为与原版一致。
 
 - 源码：`/home/mist/work/ddns-go`（分支 `main`，以仓库当前 HEAD 为准）
-- 镜像：`ddns-go-email:6.17.7-email-0.6`（约 40 MB，多阶段构建）
+- 镜像：`ddns-go-email:6.17.7-email-0.7`（约 40 MB，多阶段构建）
 - 测试：`/home/mist/work/test`（假 SMTP + 假回调，可随时重跑）
+
+> **不要使用 `-u` 参数。** 它会从上游 GitHub releases 下载官方二进制覆盖自身，
+> 邮件通知功能会随之丢失，且不可逆（需要重新拉镜像）。同理不要用 `-s install` 在本镜像内装服务。
 
 ## 与原版的差异
 
@@ -35,12 +38,12 @@
 6. 临时/已弃用的 IPv6（SLAAC 隐私地址）会被忽略，不会因为地址按小时轮换而反复发信。
 7. 状态文件与配置文件同目录：`<配置文件路径>.email-state.json`，随挂载卷持久化；
    写入采用「临时文件 + rename」原子替换，写盘失败时自动降级到内存状态，**不会重复轰炸**。
-8. 单次 SMTP 会话有 45 秒硬超时，服务器半死时不会把 DNS 更新主循环一起拖住；
+8. 单次 SMTP 会话有 45 秒硬超时，服务器半死时不会无限卡住；但发信是**同步**的，这一轮 DNS 检测会被最多阻塞约 45 秒（连接阶段另有 15 秒超时）；
    认证失败回退 LOGIN 时最多再建立一次会话。
 9. 开启「获取失败时告警」后，连续 3 轮取不到 IP 发一封告警，恢复后再发一封恢复通知；
    同一次故障只告警一次，恢复通知失败会保留待发送状态并在下一轮重试。
 10. 每次成功通知都会追加一条历史记录：`<配置文件路径>.email-history.jsonl`（最多保留 200 条），
-    网页「历史记录」区块展示上次通知时间、当前保留条数和最近 5 条。
+    网页「历史记录」区块展示上次通知时间、当前保留条数和最近 10 条。
 11. 邮件通知与原有 Webhook 相互独立，可同时开启。
 12. 后台 `RunOnce` 已串行化，保存配置触发的立即执行不会与定时器并发重复发信。
 13. `From`/`To` 支持 `Name <addr@example.com>` 显示名；SMTP 信封会自动使用裸地址。
@@ -63,7 +66,7 @@ fork 版把默认检测间隔从 300 秒改为 **600 秒（10 分钟）**：
 ```bash
 docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.6 -l :9876 -f 120
+  ddns-go-email:6.17.7-email-0.7 -l :9876 -f 120
 ```
 
 ## 配置字段
@@ -100,7 +103,7 @@ email:
 
 ```bash
 cd /home/mist/work/ddns-go
-sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.6 .
+sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.7 .
 ```
 
 ## 运行
@@ -109,7 +112,7 @@ sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.6 .
 sudo docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 \
   -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.6
+  ddns-go-email:6.17.7-email-0.7
 ```
 
 打开 `http://<主机IP>:9876`，配置 DNS 与邮件通知后保存即可。
@@ -133,6 +136,25 @@ python3 /home/mist/work/test/verify_mail.py
 - IP 未变 → 不重复发送
 
 ## 更新记录
+
+### 6.17.7-email-0.7
+
+按外部审查报告修复，均为可验证的具体缺陷：
+
+| 问题 | 修复 |
+|---|---|
+| 同时勾选「清除已保存密码」又填新密码时，新密码被丢弃 | 改为新密码优先；前端输入新密码即撤销清除标记 |
+| 保存配置失败仍触发一轮检测（可能发信、改 DNS） | 保存失败直接返回，不再触发 RunOnce |
+| 告警/恢复通知不更新「上次通知」时间 | 发送成功后同步更新时间戳 |
+| SMTP AUTH 回退在密码错误时重复认证，可能触发邮箱账号锁定 | 仅在服务端「不支持该认证机制」（500/501/504/534）时回退 LOGIN；535 等凭据错误直接失败 |
+| 状态面板把「上次成功通知的 IP」标成「当前 IP」 | 拆成「本轮检测 IP」（`dns.LastDetected`）与「上次通知的 IP」 |
+| 保存后状态面板不刷新 | 保存成功后立即刷新一次 |
+| 密码框 placeholder 硬编码中文 | 交由前端按当前语言渲染 |
+| 文档与实现不一致 | 修正超时描述（45 秒上限但会阻塞本轮）、历史条数（10 条）等 |
+| 基础镜像 Alpine 3.21 于 2026-11-01 EOL | 升级到 **Alpine 3.24**（与上游一致） |
+| 镜像缺少来源元数据 | 增加 OCI labels（version/revision/source/license），构建时传入提交号 |
+
+新增测试：`TestSaveNewPasswordWinsOverClear`、`TestSaveFailureSkipsRunOnce`、`TestAuthMechanismUnsupported`。
 
 ### 6.17.7-email-0.6
 
@@ -197,7 +219,7 @@ python3 /home/mist/work/test/verify_mail.py
 | 改动 | 说明 |
 |---|---|
 | **修复多源 IP 探测的 fallback** | 原版在「接口返回 200 但内容里没有 IP」「读响应体失败」这两条路径上会直接 `return`，导致配置在后面的备用接口永远不会被尝试。现在只有真正解析出地址才算成功，否则继续试下一个接口（IPv4/IPv6 都修了） |
-| **新增 IP 变更历史** | 每次成功通知追加一行到 `<配置>.email-history.jsonl`，最多保留 200 条；网页「历史记录」区块展示上次通知时间、当前保留条数与最近 5 条 |
+| **新增 IP 变更历史** | 每次成功通知追加一行到 `<配置>.email-history.jsonl`，最多保留 200 条；网页「历史记录」区块展示上次通知时间、当前保留条数与最近 10 条 |
 | **新增获取失败告警（可开关）** | 连续 3 轮取不到公网 IP 时发一封告警，恢复后再发一封恢复通知；同一次故障只告警一次，恢复轮不重复发基线邮件 |
 
 配套改进：日志里输出接口响应体时会截断到 120 个字符，避免把整页 HTML 写进日志。

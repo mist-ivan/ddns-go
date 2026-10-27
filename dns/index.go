@@ -49,6 +49,11 @@ var (
 	lastRunUnix atomic.Int64
 	// intervalSec 配置的检测间隔（秒）
 	intervalSec atomic.Int64
+
+	// 最近一轮实际检测到的公网 IP，和"上次成功通知的 IP"区分开：
+	// 后者可能因为发送失败或告警场景停留在旧值。
+	lastDetectedIPv4 atomic.Value
+	lastDetectedIPv6 atomic.Value
 )
 
 // SetInterval 记录检测间隔，供页面计算“下次检测”时间
@@ -61,6 +66,17 @@ func LastRunAt() int64 { return lastRunUnix.Load() }
 
 // IntervalSeconds 返回配置的检测间隔（秒），未知时为 0
 func IntervalSeconds() int64 { return intervalSec.Load() }
+
+// LastDetected 返回最近一轮实际检测到的公网 IP（可能为空字符串）
+func LastDetected() (ipv4, ipv6 string) {
+	if v, ok := lastDetectedIPv4.Load().(string); ok {
+		ipv4 = v
+	}
+	if v, ok := lastDetectedIPv6.Load().(string); ok {
+		ipv6 = v
+	}
+	return ipv4, ipv6
+}
 
 // RunTimer 定时运行
 func RunTimer(delay time.Duration) {
@@ -186,9 +202,13 @@ func RunOnce() {
 		}
 	}
 
+	curIPv4, curIPv6 := uniqueAddr(detectedIPv4), uniqueAddr(detectedIPv6)
+	lastDetectedIPv4.Store(curIPv4)
+	lastDetectedIPv6.Store(curIPv6)
+
 	// IP 变更与获取失败告警（与 webhook 相互独立）
 	// 按地址族记录，告警文案才能准确说明是 IPv4 还是 IPv6 失败。
-	config.NotifyIPChangeEmail(&conf, uniqueAddr(detectedIPv4), uniqueAddr(detectedIPv6), config.FetchStatus{
+	config.NotifyIPChangeEmail(&conf, curIPv4, curIPv6, config.FetchStatus{
 		IPv4Expected: ipv4Expected,
 		IPv4OK:       ipv4Got,
 		IPv6Expected: ipv6Expected,

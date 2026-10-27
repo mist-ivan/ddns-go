@@ -19,12 +19,16 @@ type emailStatusPayload struct {
 	HistoryTotal    int                        `json:"historyTotal"`
 	Recent          []config.EmailHistoryEntry `json:"recent"`
 	EmailEnabled    bool                       `json:"emailEnabled"`
+	// 最近一轮实际检测到的公网 IP（区别于"上次成功通知的 IP"）
+	DetectedIPv4 string `json:"detectedIpv4"`
+	DetectedIPv6 string `json:"detectedIpv6"`
 }
 
 // HandleEmailStatus 返回邮件通知模块的运行状态，供页面状态面板轮询
 func HandleEmailStatus(writer http.ResponseWriter, request *http.Request) {
 	conf, _ := config.GetConfigCached()
 	ipv4, ipv6, lastSent := config.GetEmailStateSnapshot()
+	detectedIPv4, detectedIPv6 := dns.LastDetected()
 	summary := config.GetEmailHistorySummary(10, conf.Lang)
 
 	payload := emailStatusPayload{
@@ -36,6 +40,8 @@ func HandleEmailStatus(writer http.ResponseWriter, request *http.Request) {
 		HistoryTotal:    summary.Total,
 		Recent:          summary.Recent,
 		EmailEnabled:    conf.Email.Enable,
+		DetectedIPv4:    detectedIPv4,
+		DetectedIPv6:    detectedIPv6,
 	}
 
 	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
