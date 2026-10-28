@@ -4,7 +4,7 @@
 新增「公网 IP 变更时发送邮件提醒」功能。其余行为与原版一致。
 
 - 源码：`/home/mist/work/ddns-go`（分支 `main`，以仓库当前 HEAD 为准）
-- 镜像：`ddns-go-email:6.17.7-email-0.7`（约 40 MB，多阶段构建）
+- 镜像：`ddns-go-email:6.17.7-email-0.8`（约 40 MB，多阶段构建）
 - 测试：`/home/mist/work/test`（假 SMTP + 假回调，可随时重跑）
 
 > **不要使用 `-u` 参数。** 它会从上游 GitHub releases 下载官方二进制覆盖自身，
@@ -66,7 +66,7 @@ fork 版把默认检测间隔从 300 秒改为 **600 秒（10 分钟）**：
 ```bash
 docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.7 -l :9876 -f 120
+  ddns-go-email:6.17.7-email-0.8 -l :9876 -f 120
 ```
 
 ## 配置字段
@@ -101,9 +101,17 @@ email:
 
 ## 构建
 
+**源码分发**：本 fork 没有公开托管的仓库，源码以 `git bundle` 形式提供（包含完整提交历史）：
+
+```bash
+git clone ddns-go-email-YYYYMMDD.bundle ddns-go
+cd ddns-go && git log --oneline -1        # 应看到对应的版本提交
+```
+
+
 ```bash
 cd /home/mist/work/ddns-go
-sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.7 .
+sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.8 .
 ```
 
 ## 运行
@@ -112,7 +120,7 @@ sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.7 .
 sudo docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 \
   -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.7
+  ddns-go-email:6.17.7-email-0.8
 ```
 
 打开 `http://<主机IP>:9876`，配置 DNS 与邮件通知后保存即可。
@@ -136,6 +144,19 @@ python3 /home/mist/work/test/verify_mail.py
 - IP 未变 → 不重复发送
 
 ## 更新记录
+
+### 6.17.7-email-0.8
+
+纯镜像元数据修正，**代码与运行时行为与 0.7 完全一致**：
+
+| 改动 | 说明 |
+|---|---|
+| 移除 `org.opencontainers.image.source` | 该字段的约定是"源码仓库地址"，而本 fork 源码没有公开托管。之前指向一个空仓库，属误导 |
+| 新增 `org.opencontainers.image.url` | 指向镜像页面 `https://hub.docker.com/r/ivanzzffii/ddns-go-email`，作为项目信息入口 |
+| 新增 `org.opencontainers.image.base.name` | 声明基础镜像 `docker.io/library/alpine:3.24`，便于追溯底层系统 |
+| 其余标签不变 | `title` / `description` / `version` / `revision` / `licenses` 保持原样 |
+
+源码分发方式见「构建」一节：本仓库不公开托管，以 `git bundle` 离线分发。
 
 ### 6.17.7-email-0.7
 

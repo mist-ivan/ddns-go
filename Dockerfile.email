@@ -3,7 +3,7 @@
 #   REV=$(git rev-parse --short HEAD)
 #   docker build -f Dockerfile.email \
 #     --build-arg REVISION=$REV \
-#     -t ddns-go-email:6.17.7-email-0.7 .
+#     -t ddns-go-email:6.17.7-email-0.8 .
 FROM golang:1.25-alpine AS builder
 
 WORKDIR /src
@@ -14,7 +14,7 @@ RUN go mod download
 
 COPY . .
 
-ARG VERSION=6.17.7-email-0.7
+ARG VERSION=6.17.7-email-0.8
 RUN CGO_ENABLED=0 go build -trimpath \
       -ldflags "-s -w -X main.version=${VERSION}" \
       -o /out/ddns-go .
@@ -22,14 +22,18 @@ RUN CGO_ENABLED=0 go build -trimpath \
 # Alpine 3.21 于 2026-11-01 EOL，这里改用当前受支持的版本
 FROM alpine:3.24
 
-ARG VERSION=6.17.7-email-0.7
+ARG VERSION=6.17.7-email-0.8
 ARG REVISION=unknown
 
+# 注意：故意不设置 org.opencontainers.image.source。
+# 该字段的约定是"源码仓库地址"，而本 fork 的源码没有公开托管（以 git bundle 离线分发），
+# 指向一个空仓库会误导使用者。项目信息统一用 url 指向镜像页面。
 LABEL org.opencontainers.image.title="ddns-go-email" \
       org.opencontainers.image.description="ddns-go fork: send an email when the public IP changes" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}" \
-      org.opencontainers.image.source="https://github.com/mist-ivan/ddns-go-email" \
+      org.opencontainers.image.url="https://hub.docker.com/r/ivanzzffii/ddns-go-email" \
+      org.opencontainers.image.base.name="docker.io/library/alpine:3.24" \
       org.opencontainers.image.licenses="MIT"
 
 # tzdata 提供时区，curl/grep 方便容器内排查
