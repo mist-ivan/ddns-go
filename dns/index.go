@@ -1,6 +1,7 @@
 package dns
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -93,6 +94,21 @@ func RunTimer(delay time.Duration) {
 	}
 }
 
+// pendingRun 保证同一时刻最多只有一个"保存后立即执行"的任务在排队
+var pendingRun atomic.Bool
+
+// RunOnceAsync 异步触发一次检测；已有排队任务时直接跳过。
+// 连点保存不应堆出一串 goroutine（每个都要等上一次跑完，最长可达数分钟）。
+func RunOnceAsync() {
+	if !pendingRun.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer pendingRun.Store(false)
+		RunOnce()
+	}()
+}
+
 // RunOnce RunOnce
 func RunOnce() {
 	runOnceMu.Lock()
@@ -118,9 +134,12 @@ func RunOnce() {
 
 	// 收集本轮所有配置检测到的公网 IP，用于邮件提醒
 	var (
-		detectedIPv4, detectedIPv6                   []string
-		ipv4ExpectedCount, ipv6ExpectedCount         int
-		ipv4SuccessCount, ipv6SuccessCount           int
+		detectedIPv4, detectedIPv6           []string
+		ipv4ExpectedCount, ipv6ExpectedCount int
+		ipv4SuccessCount, ipv6SuccessCount   int
+		// sources 按配置源记录本轮地址，供邮件模块"按源比对"
+		sources    []config.SourceAddr
+		sourceSeen = map[string]int{}
 	)
 
 	for i, dc := range conf.DnsConf {
@@ -211,6 +230,11 @@ func RunOnce() {
 		if dc.Ipv6.Enable && hasDomains(dc.Ipv6.Domains) && domains.Ipv6Addr != "" {
 			ipv6SuccessCount++
 		}
+		sources = append(sources, config.SourceAddr{
+			Key:  sourceKey(dc.Name, i, sourceSeen),
+			IPv4: domains.Ipv4Addr,
+			IPv6: domains.Ipv6Addr,
+		})
 		// webhook
 		v4Status, v6Status := config.ExecWebhook(&domains, &conf)
 		// 重置单个cache
@@ -234,7 +258,7 @@ func RunOnce() {
 	// IP 变更与获取失败告警（与 webhook 相互独立）。
 	// 邮件比对只用"主地址"（按配置顺序第一个非空值）：
 	// 多个配置取到不同地址时，拼成 "a,b" 会因单个源抖动被误判为 IP 变更。
-	config.NotifyIPChangeEmail(&conf, primaryAddr(detectedIPv4), primaryAddr(detectedIPv6), config.FetchStatus{
+	config.NotifyIPChangeEmail(&conf, sources, config.FetchStatus{
 		IPv4Expected: ipv4Expected,
 		IPv4OK:       ipv4Got,
 		IPv6Expected: ipv6Expected,
@@ -252,15 +276,19 @@ func hasDomains(domains []string) bool {
 	return false
 }
 
-// primaryAddr 取第一个非空地址，作为"主地址"参与邮件比对。
-// 不做排序：排序会让地址集合变化时主地址跳来跳去。
-func primaryAddr(addrs []string) string {
-	for _, addr := range addrs {
-		if a := strings.TrimSpace(addr); a != "" {
-			return a
-		}
+// sourceKey 生成配置源的稳定标识：优先用配置名，重名/无名时退回索引。
+// 改名或调换顺序会被当成"新源"，只会静默记录基线，不会发错邮件。
+func sourceKey(name string, index int, seen map[string]int) string {
+	key := strings.TrimSpace(name)
+	if key == "" {
+		key = fmt.Sprintf("#%d", index)
 	}
-	return ""
+	if seen[key] > 0 {
+		seen[key]++
+		return fmt.Sprintf("%s#%d", key, index)
+	}
+	seen[key] = 1
+	return key
 }
 
 // uniqueAddr 去重并拼接地址，正常情况下只会有一个公网 IP

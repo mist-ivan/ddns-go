@@ -4,7 +4,7 @@
 新增「公网 IP 变更时发送邮件提醒」功能。其余行为与原版一致。
 
 - 源码：`/home/mist/work/ddns-go`（分支 `main`，以仓库当前 HEAD 为准）
-- 镜像：`ddns-go-email:6.17.7-email-0.9`（约 40 MB，多阶段构建）
+- 镜像：`ddns-go-email:6.17.7-email-0.10`（约 40 MB，多阶段构建）
 - 测试：`/home/mist/work/test`（假 SMTP + 假回调，可随时重跑）
 
 > **不要使用 `-u` 参数。** 它会从上游 GitHub releases 下载官方二进制覆盖自身，
@@ -68,7 +68,7 @@ fork 版把默认检测间隔从 300 秒改为 **600 秒（10 分钟）**：
 ```bash
 docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.9 -l :9876 -f 120
+  ddns-go-email:6.17.7-email-0.10 -l :9876 -f 120
 ```
 
 ## 配置字段
@@ -113,7 +113,7 @@ cd ddns-go && git log --oneline -1        # 应看到对应的版本提交
 
 ```bash
 cd /home/mist/work/ddns-go
-sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.9 .
+sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.10 .
 ```
 
 ## 运行
@@ -122,7 +122,7 @@ sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.9 .
 sudo docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 \
   -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.9
+  ddns-go-email:6.17.7-email-0.10
 ```
 
 打开 `http://<主机IP>:9876`，配置 DNS 与邮件通知后保存即可。
@@ -146,6 +146,22 @@ python3 /home/mist/work/test/verify_mail.py
 - IP 未变 → 不重复发送
 
 ## 更新记录
+
+### 6.17.7-email-0.10
+
+按"0.9 复盘 + 卡死场景排查"的结果修复。**0.8 / 0.9 的 tag 都保留**，可随时回退对比。
+
+| 级别 | 问题 | 修复 |
+|---|---|---|
+| P1 | 0.9 的"主地址"方案只解决了"第二个源抖动"，**第一个源**抖动时主地址会变成第二个源的 IP，仍然发假变更邮件（实测 1→2→3 封） | 状态文件改为**按源记录基线**（`sources: {"A|v4": "1.1.1.1"}`）。每个源只和自己的上次值比；某源本轮取不到地址时不动它的基线；新出现的源静默记录基线。实测两个方向的抖动都不再发信，只有地址真的变化才发 |
+| P2 | SMTP 配错时会每轮重试，每次都阻塞约 90 秒，把 DNS 更新周期从 600 秒拖到约 780 秒 | 发信失败进入**指数退避**：失败 1 次退避 10 分钟，连续 3 次退避 60 分钟；成功后清零。状态记录在 `failCount` / `nextRetryAt` |
+| P2 | 一轮里可能同时发"恢复通知"和"变更邮件"（两封） | 每轮**最多一封**：本轮已发告警/恢复时不再追发变更邮件；同时把新的基线静默持久化，避免下一轮补发 |
+| P2 | `save.go` 每次保存都 `go dns.RunOnce()`，SMTP 慢时连点保存会堆积 goroutine | 新增 `dns.RunOnceAsync()`，已有排队任务时直接跳过 |
+| P2 | 历史摘要每次轮询全量读 `.email-history.jsonl`；`scanner.Err()` 未检查，超长行会静默丢历史 | 文件超过 256 KB 时只读尾部 128 KB；补上错误日志 |
+
+行为变化（升级时注意）：恢复通知若发送失败，不再"下一轮立刻重试"，而是等退避期满（默认 10 分钟）；`alerted` 状态仍会保留，通知不会丢。
+
+新增测试：`TestNotifyPerSourceNoFalseAlarm`（按源不误报）、`TestSendBackoffAfterFailure`（退避生效）。
 
 ### 6.17.7-email-0.9
 

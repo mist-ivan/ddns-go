@@ -85,7 +85,7 @@ func TestBuildMailMessageStripsHeaderInjection(t *testing.T) {
 
 func TestComposeIPChangeMailChangeZH(t *testing.T) {
 	conf := &Config{Lang: "zh"}
-	subject, body := composeIPChangeMail(conf, emailState{LastIPv4: "1.1.1.1"}, "2.2.2.2", "", false)
+	subject, body := composeIPChangeMail(conf, sourceChange{PrevIPv4: "1.1.1.1", IPv4: "2.2.2.2"}, false)
 
 	if !strings.Contains(subject, "1.1.1.1") || !strings.Contains(subject, "2.2.2.2") {
 		t.Fatalf("subject should contain old and new IP: %s", subject)
@@ -97,7 +97,7 @@ func TestComposeIPChangeMailChangeZH(t *testing.T) {
 
 func TestComposeIPChangeMailBaselineEN(t *testing.T) {
 	conf := &Config{Lang: "en"}
-	_, body := composeIPChangeMail(conf, emailState{}, "2.2.2.2", "", true)
+	_, body := composeIPChangeMail(conf, sourceChange{IPv4: "2.2.2.2"}, true)
 
 	if !strings.Contains(body, "first recorded IP baseline") {
 		t.Fatalf("english baseline body missing: %s", body)
@@ -109,7 +109,7 @@ func TestComposeIPChangeMailBaselineEN(t *testing.T) {
 
 func TestComposeIPChangeMailIPv6Only(t *testing.T) {
 	conf := &Config{Lang: "zh"}
-	subject, _ := composeIPChangeMail(conf, emailState{LastIPv6: "2001:db8::1"}, "", "2001:db8::2", false)
+	subject, _ := composeIPChangeMail(conf, sourceChange{PrevIPv6: "2001:db8::1", IPv6: "2001:db8::2"}, false)
 	if !strings.Contains(subject, "IPv6") || !strings.Contains(subject, "2001:db8::2") {
 		t.Fatalf("IPv6-only subject is wrong: %s", subject)
 	}
@@ -570,18 +570,18 @@ func TestNotifyIPChangeEmailSendsOncePerChange(t *testing.T) {
 	}}
 	status := FetchStatus{IPv4Expected: true, IPv4OK: true}
 
-	NotifyIPChangeEmail(conf, "1.2.3.4", "", status)
+	NotifyIPChangeEmail(conf, []SourceAddr{{Key: "s1", IPv4: "1.2.3.4"}}, status)
 	waitForMessages(t, srv, 1)
 
 	// IP 未变，静默
-	NotifyIPChangeEmail(conf, "1.2.3.4", "", status)
+	NotifyIPChangeEmail(conf, []SourceAddr{{Key: "s1", IPv4: "1.2.3.4"}}, status)
 	time.Sleep(100 * time.Millisecond)
 	if n, _ := srv.stats(); n != 1 {
 		t.Fatalf("unchanged IP sent %d messages, want 1", n)
 	}
 
 	// IP 变化，只发一封
-	NotifyIPChangeEmail(conf, "5.6.7.8", "", status)
+	NotifyIPChangeEmail(conf, []SourceAddr{{Key: "s1", IPv4: "5.6.7.8"}}, status)
 	waitForMessages(t, srv, 2)
 	time.Sleep(100 * time.Millisecond)
 	n, mailFrom := srv.stats()
@@ -621,7 +621,7 @@ func TestHandleFetchHealthRetriesRecovery(t *testing.T) {
 	fetchTrackerLoaded = true
 	fetchTrackLock.Unlock()
 
-	if got := handleFetchHealth(conf, status, "1.2.3.4", ""); got {
+	if _, got := handleFetchHealth(conf, status, "1.2.3.4", ""); got {
 		t.Fatal("first recovery send should fail")
 	}
 	fetchTrackLock.Lock()
@@ -631,8 +631,13 @@ func TestHandleFetchHealthRetriesRecovery(t *testing.T) {
 		t.Fatal("failed recovery must keep alerted=true for retry")
 	}
 
-	if got := handleFetchHealth(conf, status, "1.2.3.4", ""); !got {
-		t.Fatal("second recovery send should succeed")
+	// v0.10 起发信失败会进入退避（默认 10 分钟），这里模拟退避期满
+	state := loadEmailState()
+	state.NextRetryAt = 0
+	storeEmailState(state)
+
+	if _, got := handleFetchHealth(conf, status, "1.2.3.4", ""); !got {
+		t.Fatal("second recovery send should succeed after the backoff window")
 	}
 	waitForMessages(t, srv, 1)
 }
@@ -948,5 +953,83 @@ func TestSaveConfigAtomic(t *testing.T) {
 	}
 	if !strings.Contains(string(byt), "lang: zh") {
 		t.Fatalf("saved config looks truncated: %q", string(byt))
+	}
+}
+
+// --- v0.10: 按源记录基线，单个源抖动不误报 ---
+
+func TestNotifyPerSourceNoFalseAlarm(t *testing.T) {
+	dir := t.TempDir()
+	withConfigPath(t, filepath.Join(dir, "config.yaml"))
+	_ = os.Remove(emailHistoryPath())
+
+	srv := newSMTPTestServer(t, false)
+	conf := &Config{Lang: "zh"}
+	conf.Email = Email{
+		Enable: true, SMTPHost: "127.0.0.1", SMTPPort: srv.port(), Encrypt: "none",
+		Username: "u@example.com", Password: "p", To: "a@example.com",
+		OnStart: true, AlertOnFetchFailure: true,
+	}
+
+	// (1) 首次：两个源各自记录基线，发一封基线邮件
+	NotifyIPChangeEmail(conf, []SourceAddr{
+		{Key: "A", IPv4: "1.1.1.1"},
+		{Key: "B", IPv4: "2.2.2.2"},
+	}, FetchStatus{IPv4Expected: true, IPv4OK: true})
+	waitForMessages(t, srv, 1)
+
+	// (2) 第一个源本轮没取到地址：不能发信，也不能动它的基线
+	NotifyIPChangeEmail(conf, []SourceAddr{
+		{Key: "A"},
+		{Key: "B", IPv4: "2.2.2.2"},
+	}, FetchStatus{IPv4Expected: true, IPv4OK: false})
+	time.Sleep(150 * time.Millisecond)
+	if got, _ := srv.stats(); got != 1 {
+		t.Fatalf("source A missing should not send, mails = %d", got)
+	}
+
+	// (3) 第一个源恢复且地址没变：仍然不能发信
+	NotifyIPChangeEmail(conf, []SourceAddr{
+		{Key: "A", IPv4: "1.1.1.1"},
+		{Key: "B", IPv4: "2.2.2.2"},
+	}, FetchStatus{IPv4Expected: true, IPv4OK: true})
+	time.Sleep(150 * time.Millisecond)
+	if got, _ := srv.stats(); got != 1 {
+		t.Fatalf("recovered with same IP should not send, mails = %d", got)
+	}
+
+	// (4) 真的变了才发一封
+	NotifyIPChangeEmail(conf, []SourceAddr{
+		{Key: "A", IPv4: "9.9.9.9"},
+		{Key: "B", IPv4: "2.2.2.2"},
+	}, FetchStatus{IPv4Expected: true, IPv4OK: true})
+	waitForMessages(t, srv, 2)
+	if got, _ := srv.stats(); got != 2 {
+		t.Fatalf("real change should send once, mails = %d", got)
+	}
+}
+
+// 发信失败后进入退避：退避期内不再尝试连接
+func TestSendBackoffAfterFailure(t *testing.T) {
+	dir := t.TempDir()
+	withConfigPath(t, filepath.Join(dir, "config.yaml"))
+	ResetConfigCache()
+
+	conf := &Config{Lang: "zh"}
+	conf.Email = Email{
+		Enable: true, SMTPHost: "127.0.0.1", SMTPPort: 1, Encrypt: "none",
+		Username: "u@example.com", Password: "p", To: "a@example.com",
+	}
+
+	if err := conf.sendMail("s", "b"); err == nil {
+		t.Fatal("send to a closed port should fail")
+	}
+	state := loadEmailState()
+	if state.FailCount != 1 || state.NextRetryAt == 0 {
+		t.Fatalf("expected backoff state, got failCount=%d nextRetryAt=%d", state.FailCount, state.NextRetryAt)
+	}
+
+	if err := conf.sendMail("s", "b"); !errors.Is(err, errSendBackoff) {
+		t.Fatalf("second send should be in backoff, got %v", err)
 	}
 }

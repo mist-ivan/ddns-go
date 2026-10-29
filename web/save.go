@@ -177,7 +177,7 @@ func checkAndSave(request *http.Request) string {
 
 	// 只运行一次
 	util.ForceCompareGlobal.Store(true)
-	go dns.RunOnce()
+	dns.RunOnceAsync()
 	return "ok"
 }
 

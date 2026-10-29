@@ -94,6 +94,15 @@ type emailState struct {
 	// Alerted 表示当前这轮故障已经发过告警。
 	// 必须落盘：只在内存里的话，容器重启后恢复通知就再也不会发（告警邮件里承诺过会发）。
 	Alerted bool `json:"alerted,omitempty"`
+
+	// Sources 按"配置源"记录上次见过的地址（键形如 "家里群晖|v4"）。
+	// 单独记每个源，某个源本轮取不到地址时不动它的基线，避免"某个源抖动"被当成 IP 变更。
+	Sources map[string]string `json:"sources,omitempty"`
+
+	// FailCount / NextRetryAt 用于发信失败的指数退避：
+	// SMTP 配错时不再每轮都重试（每次重试最多阻塞约 90 秒），而是逐步拉长间隔。
+	FailCount   int   `json:"failCount,omitempty"`
+	NextRetryAt int64 `json:"nextRetryAt,omitempty"`
 }
 
 // loginAuth 实现 SMTP AUTH LOGIN，部分邮件服务商只支持该方式
@@ -410,9 +419,65 @@ func (e *Email) deliver(addr, host, encrypt string, auth smtp.Auth, from string,
 	return true, nil
 }
 
-// NotifyIPChangeEmail 当公网 IP 与上次通知过的 IP 不同时发信。
-// 首次运行（没有历史记录）时，若开启 OnStart 则发送一封基线邮件。
-func NotifyIPChangeEmail(conf *Config, ipv4, ipv6 string, fetchStatus FetchStatus) {
+// SourceAddr 一个配置源本轮检测到的地址（Key 用于在状态文件里区分来源）
+type SourceAddr struct {
+	Key  string
+	IPv4 string
+	IPv6 string
+}
+
+// sourceStateKey 生成状态文件里的键
+func sourceStateKey(key, family string) string {
+	return key + "|" + family
+}
+
+// errSendBackoff 表示当前处于发信退避期，本轮应静默跳过
+var errSendBackoff = errors.New("email send is in backoff")
+
+// sendMail 带退避的发信：失败后逐步拉长重试间隔，成功则清零。
+// SMTP 配错时每轮都重试会白白占用 90 秒并拖慢 DNS 更新，所以必须退避。
+func (conf *Config) sendMail(subject, body string) error {
+	state := loadEmailState()
+	if state.NextRetryAt > 0 && time.Now().Unix() < state.NextRetryAt {
+		return errSendBackoff
+	}
+
+	if err := conf.Email.Send(subject, body); err != nil {
+		state.FailCount++
+		backoff := sendBackoffInitial
+		if state.FailCount >= 3 {
+			backoff = sendBackoffMax
+		}
+		state.NextRetryAt = time.Now().Add(backoff).Unix()
+		storeEmailState(state)
+		return err
+	}
+
+	if state.FailCount != 0 || state.NextRetryAt != 0 {
+		state.FailCount = 0
+		state.NextRetryAt = 0
+		storeEmailState(state)
+	}
+	return nil
+}
+
+const (
+	sendBackoffInitial = 10 * time.Minute
+	sendBackoffMax     = 60 * time.Minute
+)
+
+// sourceChange 一个源相对上次的地址变化
+type sourceChange struct {
+	Key      string
+	PrevIPv4 string
+	IPv4     string
+	PrevIPv6 string
+	IPv6     string
+}
+
+// NotifyIPChangeEmail 按"每个配置源各自的上次值"判断是否变化，变化时发信。
+// 某个源本轮没取到地址时不会影响其它源，也不会动它自己的基线，避免误报。
+func NotifyIPChangeEmail(conf *Config, sources []SourceAddr, fetchStatus FetchStatus) {
 	if conf == nil || !conf.Email.Enable {
 		return
 	}
@@ -420,65 +485,118 @@ func NotifyIPChangeEmail(conf *Config, ipv4, ipv6 string, fetchStatus FetchStatu
 		return
 	}
 
-	ipv4 = strings.TrimSpace(ipv4)
-	ipv6 = strings.TrimSpace(ipv6)
-	// 剔除临时/已弃用的 IPv6（SLAAC 隐私地址），它们会按小时级轮换，
-	// 若参与比对会造成大量无意义的变更邮件
-	if ipv6 != "" {
-		ipv6 = filterUnstableIPv6(ipv6)
+	// 剔除临时/已弃用的 IPv6（SLAAC 隐私地址），它们会按小时级轮换
+	normalized := make([]SourceAddr, 0, len(sources))
+	for _, src := range sources {
+		src.IPv4 = strings.TrimSpace(src.IPv4)
+		src.IPv6 = strings.TrimSpace(src.IPv6)
+		if src.IPv6 != "" {
+			src.IPv6 = filterUnstableIPv6(src.IPv6)
+		}
+		if src.IPv4 == "" && src.IPv6 == "" {
+			continue
+		}
+		normalized = append(normalized, src)
 	}
 
-	// 取 IP 失败的告警独立于变更通知：即使本轮一个地址都没拿到，也要能报出去
-	recoveredNotice := handleFetchHealth(conf, fetchStatus, ipv4, ipv6)
-
-	if ipv4 == "" && ipv6 == "" {
-		return
+	primaryIPv4, primaryIPv6 := "", ""
+	if len(normalized) > 0 {
+		primaryIPv4, primaryIPv6 = normalized[0].IPv4, normalized[0].IPv6
 	}
 
 	state := loadEmailState()
-	firstRun := state.LastIPv4 == "" && state.LastIPv6 == ""
-
-	// 空值表示本轮没取到地址（可能是瞬时失败），不参与比对也不覆盖历史值
-	changed := false
-	if ipv4 != "" && state.LastIPv4 != ipv4 {
-		changed = true
-	}
-	if ipv6 != "" && state.LastIPv6 != ipv6 {
-		changed = true
-	}
-	if !changed {
-		return
+	if state.Sources == nil {
+		state.Sources = map[string]string{}
 	}
 
+	// 逐个源比对；只更新"本轮真的取到地址"的那些键
 	next := state
-	if ipv4 != "" {
-		next.LastIPv4 = ipv4
-	}
-	if ipv6 != "" {
-		next.LastIPv6 = ipv6
+	next.Sources = make(map[string]string, len(state.Sources)+len(normalized)*2)
+	for k, v := range state.Sources {
+		next.Sources[k] = v
 	}
 
-	if firstRun && !conf.Email.OnStart {
-		// 仅记录基线，不发信
-		storeEmailState(next)
-		util.Log("邮件通知: 已记录初始 IP 基线 (%s / %s)，本次不发送", displayOrDash(ipv4), displayOrDash(ipv6))
+	var changes []sourceChange
+	for _, src := range normalized {
+		change := sourceChange{Key: src.Key}
+		if src.IPv4 != "" {
+			change.PrevIPv4 = state.Sources[sourceStateKey(src.Key, "v4")]
+			change.IPv4 = src.IPv4
+			if change.PrevIPv4 != "" && change.PrevIPv4 != src.IPv4 {
+				changes = append(changes, change)
+			}
+			next.Sources[sourceStateKey(src.Key, "v4")] = src.IPv4
+		}
+		if src.IPv6 != "" {
+			change.PrevIPv6 = state.Sources[sourceStateKey(src.Key, "v6")]
+			change.IPv6 = src.IPv6
+			if change.PrevIPv6 != "" && change.PrevIPv6 != src.IPv6 {
+				changes = append(changes, change)
+			}
+			next.Sources[sourceStateKey(src.Key, "v6")] = src.IPv6
+		}
+	}
+
+	// 取 IP 失败的告警独立于变更通知：即使本轮一个地址都没拿到，也要能报出去
+	alertSent, recoveredSent := handleFetchHealth(conf, fetchStatus, primaryIPv4, primaryIPv6)
+
+	if len(normalized) == 0 {
 		return
 	}
 
-	if firstRun && recoveredNotice {
-		// 恢复通知里已经带了当前 IP，不再重复发一封基线邮件
-		next.LastSent = time.Now().Unix()
-		storeEmailState(next)
+	firstRun := len(state.Sources) == 0 && state.LastIPv4 == "" && state.LastIPv6 == ""
+	if firstRun {
+		next.LastIPv4, next.LastIPv6 = primaryIPv4, primaryIPv6
+		if !conf.Email.OnStart {
+			storeEmailState(next)
+			util.Log("邮件通知: 已记录初始 IP 基线 (%s / %s)，本次不发送", displayOrDash(primaryIPv4), displayOrDash(primaryIPv6))
+			return
+		}
+		if recoveredSent {
+			// 恢复通知里已经带了当前 IP，不再重复发基线邮件
+			next.LastSent = time.Now().Unix()
+			storeEmailState(next)
+			return
+		}
+	} else {
+		if len(changes) == 0 {
+			// 新出现的源静默记录基线；已有源没变化则什么都不做
+			if len(next.Sources) != len(state.Sources) {
+				storeEmailState(next)
+			}
+			return
+		}
+		// 本轮已经发过告警/恢复邮件时，不再追发变更邮件（每轮最多一封）
+		if alertSent || recoveredSent {
+			storeEmailState(next)
+			return
+		}
+	}
+
+	var change sourceChange
+	if len(changes) > 0 {
+		change = changes[0]
+	} else {
+		change = sourceChange{Key: normalized[0].Key, IPv4: primaryIPv4, IPv6: primaryIPv6}
+	}
+
+	subject, body := composeIPChangeMail(conf, change, firstRun)
+	if err := conf.sendMail(subject, body); err != nil {
+		if errors.Is(err, errSendBackoff) {
+			return
+		}
+		util.Log("邮件通知发送失败（已进入退避）: %s", err)
+		// 不更新状态：下一轮（退避期满后）会重新检测到这个变化
 		return
 	}
 
-	subject, body := composeIPChangeMail(conf, state, ipv4, ipv6, firstRun)
-	if err := conf.Email.Send(subject, body); err != nil {
-		util.Log("邮件通知发送失败: %s", err)
-		// 不更新状态，下一轮继续重试
-		return
+	next.LastIPv4, next.LastIPv6 = change.IPv4, change.IPv6
+	if next.LastIPv4 == "" {
+		next.LastIPv4 = primaryIPv4
 	}
-
+	if next.LastIPv6 == "" {
+		next.LastIPv6 = primaryIPv6
+	}
 	next.LastSent = time.Now().Unix()
 	storeEmailState(next)
 
@@ -488,15 +606,15 @@ func NotifyIPChangeEmail(conf *Config, ipv4, ipv6 string, fetchStatus FetchStatu
 	}
 	AppendEmailHistory(EmailHistoryEntry{
 		Kind:     kind,
-		IPv4:     ipv4,
-		PrevIPv4: state.LastIPv4,
-		IPv6:     ipv6,
-		PrevIPv6: state.LastIPv6,
+		IPv4:     change.IPv4,
+		PrevIPv4: change.PrevIPv4,
+		IPv6:     change.IPv6,
+		PrevIPv6: change.PrevIPv6,
 	})
 	if firstRun {
-		util.Log("邮件通知: 已发送初始 IP 基线邮件 (%s / %s)", displayOrDash(ipv4), displayOrDash(ipv6))
+		util.Log("邮件通知: 已发送初始 IP 基线邮件 (%s / %s)", displayOrDash(change.IPv4), displayOrDash(change.IPv6))
 	} else {
-		util.Log("邮件通知: IP 已变更，通知邮件发送成功 (%s / %s)", displayOrDash(ipv4), displayOrDash(ipv6))
+		util.Log("邮件通知: IP 已变更，通知邮件发送成功 (%s / %s)", displayOrDash(change.IPv4), displayOrDash(change.IPv6))
 	}
 }
 
@@ -551,13 +669,13 @@ func markNotifiedNow() {
 }
 
 // handleFetchHealth 处理"取不到公网 IP"的告警与恢复通知。
-// 返回值表示本轮是否成功发出了"已恢复"通知（调用方据此避免重复发基线邮件）。
-func handleFetchHealth(conf *Config, status FetchStatus, ipv4, ipv6 string) bool {
+// 返回本轮是否真的发出了告警 / 恢复邮件（调用方据此保证"每轮最多一封"）。
+func handleFetchHealth(conf *Config, status FetchStatus, ipv4, ipv6 string) (alertSent, recoveredSent bool) {
 	if !conf.Email.AlertOnFetchFailure {
 		fetchTrackLock.Lock()
 		fetchTracker = fetchFailureTracker{}
 		fetchTrackLock.Unlock()
-		return false
+		return false, false
 	}
 
 	fetchTrackLock.Lock()
@@ -573,14 +691,15 @@ func handleFetchHealth(conf *Config, status FetchStatus, ipv4, ipv6 string) bool
 
 	if alert {
 		subject, body := composeFetchAlertMail(conf, consecutive, status)
-		if err := conf.Email.Send(subject, body); err != nil {
+		if err := conf.sendMail(subject, body); err != nil {
 			util.Log("邮件通知: IP 获取失败告警发送失败: %s", err)
 			// 允许下一轮重试，避免一次发送失败就把告警吞掉
 			fetchTrackLock.Lock()
 			fetchTracker.alerted = false
 			fetchTrackLock.Unlock()
-			return false
+			return false, false
 		}
+		alertSent = true
 		AppendEmailHistory(EmailHistoryEntry{Kind: historyKindFetchFailed, IPv4: ipv4, IPv6: ipv6})
 		markNotifiedNow()
 		setAlertedState(true)
@@ -589,7 +708,7 @@ func handleFetchHealth(conf *Config, status FetchStatus, ipv4, ipv6 string) bool
 
 	if recovered {
 		subject, body := composeRecoveredMail(conf, status, ipv4, ipv6)
-		if err := conf.Email.Send(subject, body); err != nil {
+		if err := conf.sendMail(subject, body); err != nil {
 			util.Log("邮件通知: IP 获取恢复通知发送失败: %s", err)
 			// observe(false) 刚刚清掉了 alerted；这里必须还原，
 			// 否则下一轮健康时不会再触发恢复通知，通知就永久丢失了。
@@ -597,16 +716,17 @@ func handleFetchHealth(conf *Config, status FetchStatus, ipv4, ipv6 string) bool
 			fetchTracker.alerted = true
 			fetchTracker.consecutive = 0
 			fetchTrackLock.Unlock()
-			return false
+			return false, false
 		}
+		recoveredSent = true
 		AppendEmailHistory(EmailHistoryEntry{Kind: historyKindRecovered, IPv4: ipv4, IPv6: ipv6})
 		markNotifiedNow()
 		setAlertedState(false)
 		util.Log("邮件通知: IP 获取已恢复, 已发送恢复通知")
-		return true
+		return alertSent, true
 	}
 
-	return false
+	return alertSent, recoveredSent
 }
 
 // composeFetchAlertMail 生成"取不到 IP"的告警邮件
@@ -718,13 +838,15 @@ func logIgnoredIPv6(dropped []string) {
 }
 
 // composeIPChangeMail 生成通知邮件的标题和正文
-func composeIPChangeMail(conf *Config, state emailState, ipv4, ipv6 string, firstRun bool) (subject, body string) {
+func composeIPChangeMail(conf *Config, change sourceChange, firstRun bool) (subject, body string) {
 	zh := strings.HasPrefix(strings.ToLower(conf.Lang), "zh")
 	now := time.Now().Format("2006-01-02 15:04:05 -07:00")
 	hostname, _ := os.Hostname()
 
-	v4Changed := ipv4 != "" && state.LastIPv4 != ipv4
-	v6Changed := ipv6 != "" && state.LastIPv6 != ipv6
+	ipv4, ipv6 := change.IPv4, change.IPv6
+	prevIPv4, prevIPv6 := change.PrevIPv4, change.PrevIPv6
+	v4Changed := ipv4 != "" && prevIPv4 != ipv4
+	v6Changed := ipv6 != "" && prevIPv6 != ipv6
 	firstIP := ipv4
 	if firstIP == "" {
 		firstIP = ipv6
@@ -739,14 +861,14 @@ func composeIPChangeMail(conf *Config, state emailState, ipv4, ipv6 string, firs
 			switch {
 			case v4Changed && v6Changed:
 				subject = fmt.Sprintf("[ddns-go] IP 地址变更: %s -> %s / IPv6 %s -> %s",
-					displayOrDash(state.LastIPv4), displayOrDash(ipv4),
-					displayOrDash(state.LastIPv6), displayOrDash(ipv6))
+					displayOrDash(prevIPv4), displayOrDash(ipv4),
+					displayOrDash(prevIPv6), displayOrDash(ipv6))
 			case v6Changed:
 				subject = fmt.Sprintf("[ddns-go] IPv6 地址变更: %s -> %s",
-					displayOrDash(state.LastIPv6), displayOrDash(ipv6))
+					displayOrDash(prevIPv6), displayOrDash(ipv6))
 			default:
 				subject = fmt.Sprintf("[ddns-go] IP 地址变更: %s -> %s",
-					displayOrDash(state.LastIPv4), displayOrDash(ipv4))
+					displayOrDash(prevIPv4), displayOrDash(ipv4))
 			}
 			b.WriteString("ddns-go 检测到公网 IP 地址发生变化。\n\n")
 		}
@@ -754,11 +876,11 @@ func composeIPChangeMail(conf *Config, state emailState, ipv4, ipv6 string, firs
 		fmt.Fprintf(&b, "主机: %s\n", hostname)
 		fmt.Fprintf(&b, "IPv4: %s\n", displayOrDash(ipv4))
 		if !firstRun {
-			fmt.Fprintf(&b, "  上次: %s\n", displayOrDash(state.LastIPv4))
+			fmt.Fprintf(&b, "  上次: %s\n", displayOrDash(prevIPv4))
 		}
 		fmt.Fprintf(&b, "IPv6: %s\n", displayOrDash(ipv6))
 		if !firstRun {
-			fmt.Fprintf(&b, "  上次: %s\n", displayOrDash(state.LastIPv6))
+			fmt.Fprintf(&b, "  上次: %s\n", displayOrDash(prevIPv6))
 		}
 	} else {
 		if firstRun {
@@ -768,14 +890,14 @@ func composeIPChangeMail(conf *Config, state emailState, ipv4, ipv6 string, firs
 			switch {
 			case v4Changed && v6Changed:
 				subject = fmt.Sprintf("[ddns-go] IP changed: %s -> %s / IPv6 %s -> %s",
-					displayOrDash(state.LastIPv4), displayOrDash(ipv4),
-					displayOrDash(state.LastIPv6), displayOrDash(ipv6))
+					displayOrDash(prevIPv4), displayOrDash(ipv4),
+					displayOrDash(prevIPv6), displayOrDash(ipv6))
 			case v6Changed:
 				subject = fmt.Sprintf("[ddns-go] IPv6 changed: %s -> %s",
-					displayOrDash(state.LastIPv6), displayOrDash(ipv6))
+					displayOrDash(prevIPv6), displayOrDash(ipv6))
 			default:
 				subject = fmt.Sprintf("[ddns-go] IP changed: %s -> %s",
-					displayOrDash(state.LastIPv4), displayOrDash(ipv4))
+					displayOrDash(prevIPv4), displayOrDash(ipv4))
 			}
 			b.WriteString("ddns-go detected that the public IP address has changed.\n\n")
 		}
@@ -783,11 +905,11 @@ func composeIPChangeMail(conf *Config, state emailState, ipv4, ipv6 string, firs
 		fmt.Fprintf(&b, "Host: %s\n", hostname)
 		fmt.Fprintf(&b, "IPv4: %s\n", displayOrDash(ipv4))
 		if !firstRun {
-			fmt.Fprintf(&b, "  previous: %s\n", displayOrDash(state.LastIPv4))
+			fmt.Fprintf(&b, "  previous: %s\n", displayOrDash(prevIPv4))
 		}
 		fmt.Fprintf(&b, "IPv6: %s\n", displayOrDash(ipv6))
 		if !firstRun {
-			fmt.Fprintf(&b, "  previous: %s\n", displayOrDash(state.LastIPv6))
+			fmt.Fprintf(&b, "  previous: %s\n", displayOrDash(prevIPv6))
 		}
 	}
 

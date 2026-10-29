@@ -3,6 +3,7 @@ package config
 import (
 	"bufio"
 	"encoding/json"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -73,7 +74,14 @@ func AppendEmailHistory(entry EmailHistoryEntry) {
 	trimEmailHistoryLocked(path)
 }
 
-// readEmailHistoryLines 读取全部非空行（不加锁，调用方负责并发控制）
+// 正常上限 200 条时文件只有几十 KB；超过这个体积说明裁剪失效（例如重命名被拒），
+// 此时只读尾部，避免每次页面轮询都全量读一个不断变大的文件。
+const (
+	emailHistoryFullReadLimit = 256 * 1024
+	emailHistoryTailBytes     = 128 * 1024
+)
+
+// readEmailHistoryLines 读取非空行（不加锁，调用方负责并发控制）
 func readEmailHistoryLines(path string) []string {
 	f, err := os.Open(path)
 	if err != nil {
@@ -81,13 +89,33 @@ func readEmailHistoryLines(path string) []string {
 	}
 	defer f.Close()
 
+	var reader io.Reader = f
+	skipFirstPartial := false
+	if info, err := f.Stat(); err == nil && info.Size() > emailHistoryFullReadLimit {
+		if _, err := f.Seek(info.Size()-emailHistoryTailBytes, io.SeekStart); err == nil {
+			skipFirstPartial = true
+		}
+	}
+	_ = reader
+
 	var lines []string
-	scanner := bufio.NewScanner(f)
+	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	first := true
 	for scanner.Scan() {
-		if line := strings.TrimSpace(scanner.Text()); line != "" {
+		line := strings.TrimSpace(scanner.Text())
+		if first && skipFirstPartial {
+			// 从中间开始读，第一条大概率是被截断的半行
+			first = false
+			continue
+		}
+		first = false
+		if line != "" {
 			lines = append(lines, line)
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		util.Log("邮件通知: 读取历史记录失败: %s", err)
 	}
 	return lines
 }
