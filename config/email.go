@@ -91,6 +91,9 @@ type emailState struct {
 	LastIPv4 string `json:"lastIPv4"`
 	LastIPv6 string `json:"lastIPv6"`
 	LastSent int64  `json:"lastSent"`
+	// Alerted 表示当前这轮故障已经发过告警。
+	// 必须落盘：只在内存里的话，容器重启后恢复通知就再也不会发（告警邮件里承诺过会发）。
+	Alerted bool `json:"alerted,omitempty"`
 }
 
 // loginAuth 实现 SMTP AUTH LOGIN，部分邮件服务商只支持该方式
@@ -180,7 +183,7 @@ func normalizeEncrypt(raw string, port int) (string, error) {
 	case "ssl", "tls", "starttls", "none":
 		return encrypt, nil
 	default:
-		return "", fmt.Errorf("不支持的加密方式: %s", raw)
+		return "", fmt.Errorf("%s", util.LogStr("不支持的加密方式: %s", raw))
 	}
 }
 
@@ -200,7 +203,7 @@ func isLocalhost(host string) bool {
 func parseSender(raw string) (envelope, header string, err error) {
 	addr, err := mail.ParseAddress(strings.TrimSpace(raw))
 	if err != nil {
-		return "", "", fmt.Errorf("发件人地址不合法: %w", err)
+		return "", "", fmt.Errorf("%s", util.LogStr("发件人地址不合法: %s", err.Error()))
 	}
 	return addr.Address, addr.String(), nil
 }
@@ -214,11 +217,11 @@ func parseRecipients(raw string) ([]*mail.Address, error) {
 	}
 	normalized = strings.Trim(normalized, " \t,")
 	if normalized == "" {
-		return nil, errors.New("收件人不能为空")
+		return nil, errors.New(util.LogStr("收件人不能为空"))
 	}
 	list, err := mail.ParseAddressList(normalized)
 	if err != nil {
-		return nil, fmt.Errorf("收件人地址不合法: %w", err)
+		return nil, fmt.Errorf("%s", util.LogStr("收件人地址不合法: %s", err.Error()))
 	}
 	if len(list) == 0 {
 		return nil, errors.New("收件人不能为空")
@@ -230,19 +233,19 @@ func parseRecipients(raw string) ([]*mail.Address, error) {
 func (e *Email) Validate() error {
 	host := normalizeSMTPHost(e.SMTPHost)
 	if host == "" {
-		return errors.New("SMTP 服务器不能为空")
+		return errors.New(util.LogStr("SMTP 服务器不能为空"))
 	}
 	if strings.ContainsAny(host, " \t\r\n") {
-		return errors.New("SMTP 服务器不能包含空白字符")
+		return errors.New(util.LogStr("SMTP 服务器不能包含空白字符"))
 	}
 	// 常见误填：把 host:port 整体填进“服务器”输入框
 	if strings.Count(host, ":") == 1 {
 		if _, _, err := net.SplitHostPort(host); err == nil {
-			return errors.New("SMTP 服务器只填主机名，端口请填在端口输入框")
+			return errors.New(util.LogStr("SMTP 服务器只填主机名，端口请填在端口输入框"))
 		}
 	}
 	if e.SMTPPort < 0 || e.SMTPPort > 65535 {
-		return fmt.Errorf("SMTP 端口不合法: %d", e.SMTPPort)
+		return fmt.Errorf("%s", util.LogStr("SMTP 端口不合法: %d", e.SMTPPort))
 	}
 	port := e.SMTPPort
 	if port == 0 {
@@ -253,7 +256,7 @@ func (e *Email) Validate() error {
 		return err
 	}
 	if e.Username != "" && encrypt == "none" && !isLocalhost(host) {
-		return errors.New("拒绝在未加密的 SMTP 连接上发送账号密码，请改用 SSL 或 STARTTLS")
+		return errors.New(util.LogStr("拒绝在未加密的 SMTP 连接上发送账号密码，请改用 SSL 或 STARTTLS"))
 	}
 
 	from := strings.TrimSpace(e.From)
@@ -261,7 +264,7 @@ func (e *Email) Validate() error {
 		from = strings.TrimSpace(e.Username)
 	}
 	if from == "" {
-		return errors.New("发件人不能为空")
+		return errors.New(util.LogStr("发件人不能为空"))
 	}
 	if _, _, err := parseSender(from); err != nil {
 		return err
@@ -344,7 +347,7 @@ func (e *Email) deliver(addr, host, encrypt string, auth smtp.Auth, from string,
 		conn, err = dialer.Dial("tcp", addr)
 	}
 	if err != nil {
-		return false, fmt.Errorf("连接 SMTP 服务器失败: %w", err)
+		return false, fmt.Errorf("%s", util.LogStr("连接 SMTP 服务器失败: %s", err.Error()))
 	}
 	defer conn.Close()
 
@@ -353,47 +356,50 @@ func (e *Email) deliver(addr, host, encrypt string, auth smtp.Auth, from string,
 
 	client, err := smtp.NewClient(conn, host)
 	if err != nil {
-		return false, fmt.Errorf("初始化 SMTP 会话失败: %w", err)
+		return false, fmt.Errorf("%s", util.LogStr("初始化 SMTP 会话失败: %s", err.Error()))
 	}
 	defer client.Close()
 
 	if encrypt == "starttls" {
 		if ok, _ := client.Extension("STARTTLS"); !ok {
-			return false, errors.New("SMTP 服务器不支持 STARTTLS")
+			return false, errors.New(util.LogStr("SMTP 服务器不支持 STARTTLS"))
 		}
 		if err = client.StartTLS(&tls.Config{ServerName: host}); err != nil {
-			return false, fmt.Errorf("STARTTLS 失败: %w", err)
+			return false, fmt.Errorf("%s", util.LogStr("STARTTLS 失败: %s", err.Error()))
 		}
 	}
 
 	if auth != nil {
-		if ok, _ := client.Extension("AUTH"); ok {
-			if err = client.Auth(auth); err != nil {
-				if isAuthMechanismUnsupported(err) {
-					return false, &smtpAuthError{err: err}
-				}
-				return false, fmt.Errorf("SMTP 认证被拒绝: %w", err)
+		if ok, _ := client.Extension("AUTH"); !ok {
+			// 用户配了账号密码，服务器却没宣告 AUTH：不能静默降级成匿名发送，
+			// 否则凭据被悄悄丢弃，最终报的是莫名其妙的 "MAIL FROM 被拒绝"。
+			return false, errors.New(util.LogStr("SMTP 服务器未宣告支持认证（AUTH），已配置的账号密码无法使用"))
+		}
+		if err = client.Auth(auth); err != nil {
+			if isAuthMechanismUnsupported(err) {
+				return false, &smtpAuthError{err: err}
 			}
+			return false, fmt.Errorf("%s", util.LogStr("SMTP 认证被拒绝: %s", err.Error()))
 		}
 	}
 
 	if err = client.Mail(from); err != nil {
-		return false, fmt.Errorf("MAIL FROM 被拒绝: %w", err)
+		return false, fmt.Errorf("%s", util.LogStr("MAIL FROM 被拒绝: %s", err.Error()))
 	}
 	for _, rcpt := range to {
 		if err = client.Rcpt(rcpt); err != nil {
-			return false, fmt.Errorf("RCPT TO(%s) 被拒绝: %w", rcpt, err)
+			return false, fmt.Errorf("%s", util.LogStr("RCPT TO(%s) 被拒绝: %s", rcpt, err.Error()))
 		}
 	}
 	w, err := client.Data()
 	if err != nil {
-		return false, fmt.Errorf("DATA 被拒绝: %w", err)
+		return false, fmt.Errorf("%s", util.LogStr("DATA 被拒绝: %s", err.Error()))
 	}
 	if _, err = w.Write(msg); err != nil {
-		return false, fmt.Errorf("写入邮件内容失败: %w", err)
+		return false, fmt.Errorf("%s", util.LogStr("写入邮件内容失败: %s", err.Error()))
 	}
 	if err = w.Close(); err != nil {
-		return false, fmt.Errorf("提交邮件内容失败: %w", err)
+		return false, fmt.Errorf("%s", util.LogStr("提交邮件内容失败: %s", err.Error()))
 	}
 	accepted = true
 
@@ -522,7 +528,19 @@ func (t *fetchFailureTracker) observe(failed bool) (alert bool, recovered bool) 
 var (
 	fetchTrackLock sync.Mutex
 	fetchTracker   fetchFailureTracker
+	// fetchTrackerLoaded 保证第一次使用时从状态文件恢复 alerted
+	fetchTrackerLoaded bool
 )
+
+// setAlertedState 把"当前故障是否已告警"写进状态文件，重启后恢复通知才不会丢
+func setAlertedState(alerted bool) {
+	state := loadEmailState()
+	if state.Alerted == alerted {
+		return
+	}
+	state.Alerted = alerted
+	storeEmailState(state)
+}
 
 // markNotifiedNow 记录"刚刚发过通知"的时间戳，但不改动 IP 基线。
 // 告警/恢复这类通知也要反映到状态面板的"上次通知"上。
@@ -543,6 +561,12 @@ func handleFetchHealth(conf *Config, status FetchStatus, ipv4, ipv6 string) bool
 	}
 
 	fetchTrackLock.Lock()
+	if !fetchTrackerLoaded {
+		// 进程重启后恢复"是否已告警"，否则：
+		// 故障期间重启 → 恢复时不会发恢复通知；已告警的故障会再告警一次
+		fetchTracker.alerted = loadEmailState().Alerted
+		fetchTrackerLoaded = true
+	}
 	alert, recovered := fetchTracker.observe(status.Failed())
 	consecutive := fetchTracker.consecutive
 	fetchTrackLock.Unlock()
@@ -559,6 +583,7 @@ func handleFetchHealth(conf *Config, status FetchStatus, ipv4, ipv6 string) bool
 		}
 		AppendEmailHistory(EmailHistoryEntry{Kind: historyKindFetchFailed, IPv4: ipv4, IPv6: ipv6})
 		markNotifiedNow()
+		setAlertedState(true)
 		util.Log("邮件通知: 连续 %d 轮未能获取 IP, 已发送告警邮件", consecutive)
 	}
 
@@ -576,6 +601,7 @@ func handleFetchHealth(conf *Config, status FetchStatus, ipv4, ipv6 string) bool
 		}
 		AppendEmailHistory(EmailHistoryEntry{Kind: historyKindRecovered, IPv4: ipv4, IPv6: ipv6})
 		markNotifiedNow()
+		setAlertedState(false)
 		util.Log("邮件通知: IP 获取已恢复, 已发送恢复通知")
 		return true
 	}

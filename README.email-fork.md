@@ -4,7 +4,7 @@
 新增「公网 IP 变更时发送邮件提醒」功能。其余行为与原版一致。
 
 - 源码：`/home/mist/work/ddns-go`（分支 `main`，以仓库当前 HEAD 为准）
-- 镜像：`ddns-go-email:6.17.7-email-0.8`（约 40 MB，多阶段构建）
+- 镜像：`ddns-go-email:6.17.7-email-0.9`（约 40 MB，多阶段构建）
 - 测试：`/home/mist/work/test`（假 SMTP + 假回调，可随时重跑）
 
 > **不要使用 `-u` 参数。** 它会从上游 GitHub releases 下载官方二进制覆盖自身，
@@ -19,27 +19,29 @@
 | `dns/index.go` | 每轮收集检测到的 IP，循环结束后调用 `NotifyIPChangeEmail` |
 | `web/save.go` | 解析并保存邮件配置；SMTP 密码留空表示保持原值 |
 | `web/writing.go` + `web/writing.html` | 新增「邮件通知」配置区与「发送测试邮件」按钮 |
-| `web/emailTest.go` | 新增 `/emailTest` 接口 |
-| `main.go` | 注册 `/emailTest` 路由；`-f` 检测间隔默认值 300 → **600 秒** |
+| `web/emailTest.go` | 新增 `/emailTest` 接口（限频 5 秒，且仅在目标与已保存配置一致时复用已存密码） |
+| `web/emailStatus.go` | 新增 `/emailStatus`（状态面板数据）、`/emailHistoryClear`（清空历史，仅 POST） |
+| `config/email_history.go` | 通知历史（JSONL，最多 200 条） |
+| `main.go` | 注册 `/emailTest` / `/emailStatus` / `/emailHistoryClear` 路由；`-f` 检测间隔默认值 300 → **600 秒** |
 | `static/i18n.js` / `util/messages.go` | 中英文文案 |
 | `Dockerfile.email` | 多阶段构建的镜像定义，CMD 默认 `-f 600` |
 | `config/email_test.go` / `web/email_test.go` | 单元测试 |
 
 ## 行为语义
 
-1. 每轮检测后，把本轮 IPv4/IPv6 与「上次成功通知的 IP」比较。
+1. 每轮检测后，把本轮 IPv4/IPv6 与「上次成功通知的 IP」比较。多个配置时只用**主地址**（按配置顺序第一个取到的值）参与比较，避免某个源抖动导致拼接串变化而误报。
 2. **只有真正变化时才发信**；IP 未变的轮次完全静默。
 3. 首次运行（无历史记录）：
    - `onstart: false`（默认）→ 只记录基线，不发信；
    - `onstart: true` → 发一封基线邮件。
 4. 发送失败时**不更新状态**，下一轮自动重试，不会丢事件；
    但只有认证机制不被接受时才回退 `AUTH LOGIN`，且 `DATA` 已被接收后 `QUIT` 失败不会重发。
-5. 某一轮取不到地址（瞬时失败）时，该地址不参与比对，也不会覆盖历史值，避免"掉线"被误报成"IP 变更"。
+5. 某一轮取不到地址（瞬时失败）时，该地址不参与比对，也不会覆盖历史值，避免"掉线"被误报成"IP 变更"；但**任一**启用了地址族的配置持续取不到地址，会计入告警（多配置里坏一个也会报）。
 6. 临时/已弃用的 IPv6（SLAAC 隐私地址）会被忽略，不会因为地址按小时轮换而反复发信。
 7. 状态文件与配置文件同目录：`<配置文件路径>.email-state.json`，随挂载卷持久化；
    写入采用「临时文件 + rename」原子替换，写盘失败时自动降级到内存状态，**不会重复轰炸**。
-8. 单次 SMTP 会话有 45 秒硬超时，服务器半死时不会无限卡住；但发信是**同步**的，这一轮 DNS 检测会被最多阻塞约 45 秒（连接阶段另有 15 秒超时）；
-   认证失败回退 LOGIN 时最多再建立一次会话。
+8. 单次 SMTP 会话有 45 秒硬超时（连接阶段另有 15 秒超时），服务器半死时不会无限卡住。发信是**同步**的，因此这一轮 DNS 检测会被阻塞：
+   单次 `Send` 最坏要建立两个会话（PLAIN 被拒后回退 LOGIN）= 约 90 秒，一轮里若同时要发告警和变更邮件则约 180 秒。这是已知上限，不是无限等待。
 9. 开启「获取失败时告警」后，连续 3 轮取不到 IP 发一封告警，恢复后再发一封恢复通知；
    同一次故障只告警一次，恢复通知失败会保留待发送状态并在下一轮重试。
 10. 每次成功通知都会追加一条历史记录：`<配置文件路径>.email-history.jsonl`（最多保留 200 条），
@@ -66,7 +68,7 @@ fork 版把默认检测间隔从 300 秒改为 **600 秒（10 分钟）**：
 ```bash
 docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.8 -l :9876 -f 120
+  ddns-go-email:6.17.7-email-0.9 -l :9876 -f 120
 ```
 
 ## 配置字段
@@ -95,7 +97,7 @@ email:
 | 587 | `starttls` | 明文连接后升级 TLS |
 | 25 | `none` | 不加密（仅内网/本地测试）|
 
-`encrypt` 留空时按端口自动推断；网页上切换端口会自动带出常用值。
+`encrypt` 留空时按端口自动推断（465 → ssl，587 → starttls，其它端口 → none；页面下拉的默认选项与此一致）；网页上切换端口会自动带出常用值。
 认证先尝试 `AUTH PLAIN`，**只有认证阶段失败**才回退 `AUTH LOGIN`。
 `none` + 非 localhost + 配置了 SMTP 账号时，程序会直接拒绝发送，避免密码明文上网；如确需内网明文认证，请自行改代码或使用 localhost 转发。
 
@@ -111,7 +113,7 @@ cd ddns-go && git log --oneline -1        # 应看到对应的版本提交
 
 ```bash
 cd /home/mist/work/ddns-go
-sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.8 .
+sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.9 .
 ```
 
 ## 运行
@@ -120,7 +122,7 @@ sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.8 .
 sudo docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 \
   -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.8
+  ddns-go-email:6.17.7-email-0.9
 ```
 
 打开 `http://<主机IP>:9876`，配置 DNS 与邮件通知后保存即可。
@@ -144,6 +146,38 @@ python3 /home/mist/work/test/verify_mail.py
 - IP 未变 → 不重复发送
 
 ## 更新记录
+
+### 6.17.7-email-0.9
+
+按完整代码审计修复。**0.8 的 tag 保留**（同仓库同时存在 0.8 与 0.9，便于回退对比）。
+
+| 编号 | 问题 | 修复 |
+|---|---|---|
+| P1 | 多配置时各源 IP 被拼成 `"a,b"` 参与比较，任一源瞬时失败就发假"IP 变更"邮件（实测 16 秒两封） | 邮件比对改用**主地址**（配置顺序第一个非空值），完整列表仅用于页面展示 |
+| P1 | `util.ForceCompareGlobal` 是裸 bool，HTTP goroutine 与 RunOnce 并发读写（`-race` 实测报 DATA RACE） | 改为 `atomic.Bool`，RunOnce 入口 `Swap(false)` 取快照，配置读取失败时归还标志 |
+| P1 | 「清除已保存的密码」在"先输新密码再点清除"或"保存过之后"会静默失效，且明文密码残留输入框 | 点清除时同步清空输入框与内存值；保存成功后也清空 |
+| P1 | 告警/恢复状态只在内存，容器重启后恢复通知永久丢失 | `alerted` 落盘到状态文件，进程启动后恢复 |
+| P1 | 多配置里单个配置持续取不到 IP 永远不会告警（`ipv4Got` 是"任一成功"） | 改为按配置粒度统计，任一期望配置失败即计入 |
+| P1 | 配置文件用 `os.WriteFile` 直接覆盖，断电/磁盘满会留下半截 YAML（启动即失败） | 改为 临时文件 + `Sync` + `rename` 原子写 |
+| P1 | SMTP 服务器未宣告 AUTH 时静默跳过认证，凭据被丢弃且报错误导 | 直接返回明确错误 |
+| P2 | `/emailHistoryClear`、`/clearLog` 不校验方法，跨站 GET 可清空历史/日志 | 非 POST 返回 405 |
+| P2 | `/emailTest` 会把已保存密码发往请求指定的任意 SMTP 主机，且无频率限制 | 仅当 host+port+账号与已保存配置一致时复用密码；5 秒限频 |
+| P2 | 状态请求失败的错误提示 1 秒内被旧缓存覆盖，过期数据当最新 | 记录错误态，错误期间暂停缓存重绘，错误用 `textContent` 渲染 |
+| P2 | `lastRunAt` 记的是本轮**开始**时间（`defer` 实参立即求值），"上次检测"偏移 | 改用函数字面量，记录完成时间 |
+| P2 | 保存触发的立即执行会让"下次检测"倒计时虚高一个周期 | 由定时器维护 `nextRunAt`，前端优先用它 |
+| P2 | 邮件输入框里按回车会触发「模拟测试 Webhook」（`webhookTestBtn` 缺 `type`） | 补 `type="button"` |
+| P2 | 邮件关闭时非法 SMTP 端口错误被静默吞掉，界面显示值与实际保存值不一致 | 只要填了端口就校验并报错 |
+| P2 | 同一次请求可把密码强度阈值从 30bit 降到 25bit | 用保存前的值判定，取更严格的结果 |
+| P2 | 首轮基线 IP 被标成「上次通知的 IP」 | 接口返回 `hasNotified`，未发过信时显示「基线 IP（尚未通知）」 |
+| P2 | 历史摘要的 `TimeText/KindText/LastTime/lang` 全是死代码，前端另做一套且文案分叉 | 删除死字段与两个格式化函数，展示统一由前端按当前语言渲染 |
+| P2 | 后端校验类错误硬编码中文，英文界面下仍是中文 | 22 条错误文案接入 `util.LogStr` + `messages.go` 英文翻译 |
+| P2 | 两条日志翻译因格式串不匹配永不生效（全角逗号、`%v` vs `%s`） | 修正键 |
+| P2 | 3 个 i18n 死键；深色模式 `.text-muted`/`.text-warning` 对比度不足（约 1.6:1 / 3:1） | 删除死键；新增深浅两套配色覆盖 |
+| P2 | Dockerfile 缺 HEALTHCHECK | 增加 `HEALTHCHECK`（探 `/login`） |
+
+新增测试：`TestPrimaryAddr`、`TestUniqueAddr`、`TestCheckPasswordWithLimit`、`TestAlertedStatePersists`、`TestSaveConfigAtomic`、`TestEmailHistoryClearRejectsGet`、`TestSameSMTPHost`。
+
+验证：`go vet` 干净、`go test ./...` 全绿、`go test -race ./config ./web ./dns` 无竞态报告；多配置误报复现脚本改造后不再出现假变更邮件。
 
 ### 6.17.7-email-0.8
 

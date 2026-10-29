@@ -65,6 +65,8 @@ func checkAndSave(request *http.Request) string {
 		conf.Lang = util.InitLogLang(conf.Lang)
 	}
 
+	// 记住保存前的值：同一次请求里把它改成 true 会放松密码强度要求
+	wasLanOnly := conf.NotAllowWanAccess
 	conf.NotAllowWanAccess = data.NotAllowWanAccess
 	conf.WebhookURL = strings.TrimSpace(data.WebhookURL)
 	conf.WebhookRequestBody = strings.TrimSpace(data.WebhookRequestBody)
@@ -76,12 +78,11 @@ func checkAndSave(request *http.Request) string {
 	if data.EmailEnable || strings.TrimSpace(data.EmailSMTPPort) != "" {
 		port, portErr := parseSMTPPort(data.EmailSMTPPort)
 		if portErr != nil {
-			if data.EmailEnable {
-				return util.LogStr("邮件通知配置错误: %s", portErr.Error())
-			}
-		} else {
-			conf.Email.SMTPPort = port
+			// 只要给了端口就校验：以前邮件关闭时会静默吞掉错误、保留旧端口，
+			// 界面上显示的却是用户刚填的非法值，下次启用时行为和界面不一致。
+			return util.LogStr("邮件通知配置错误: %s", portErr.Error())
 		}
+		conf.Email.SMTPPort = port
 	}
 	conf.Email.Username = strings.TrimSpace(data.EmailUsername)
 	// 密码留空表示保持原值，避免前端回显明文。
@@ -106,7 +107,8 @@ func checkAndSave(request *http.Request) string {
 	// 如果新密码不为空则检查是否够强, 内/外网要求强度不同
 	conf.Username = usernameNew
 	if passwordNew != "" {
-		hashedPwd, err := conf.CheckPassword(passwordNew)
+		// 两次判定取"更严格"的结果：把 NotAllowWanAccess 从 false 改成 true 不能顺便降低强度要求
+		hashedPwd, err := conf.CheckPasswordWithLimit(passwordNew, wasLanOnly && conf.NotAllowWanAccess)
 		if err != nil {
 			return err.Error()
 		}
@@ -174,7 +176,7 @@ func checkAndSave(request *http.Request) string {
 	}
 
 	// 只运行一次
-	util.ForceCompareGlobal = true
+	util.ForceCompareGlobal.Store(true)
 	go dns.RunOnce()
 	return "ok"
 }
@@ -187,7 +189,7 @@ func parseSMTPPort(raw string) (int, error) {
 	}
 	port, err := strconv.Atoi(raw)
 	if err != nil || port < 1 || port > 65535 {
-		return 0, fmt.Errorf("SMTP 端口不合法: %s", raw)
+		return 0, fmt.Errorf("%s", util.LogStr("SMTP 端口不合法: %s", raw))
 	}
 	return port, nil
 }

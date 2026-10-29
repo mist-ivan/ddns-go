@@ -21,6 +21,22 @@ body {
     z-index: 1050;
 }
 
+/* 浅色模式下 Bootstrap 的 .text-warning(#ffc107) 在白底上几乎看不清，
+   本项目只用于"邮件通知未启用"这一处提示，改成深黄；深色模式再用亮黄。 */
+.text-warning {
+    color: #8a6d00 !important;
+}
+
+[data-theme='dark'] .text-warning {
+    color: #e3b341 !important;
+}
+
+/* 状态面板/IP/时间用的是 .text-muted，深色背景下对比度不足（约 3:1），
+   这些是主要信息而不是辅助说明，单独提亮。 */
+[data-theme='dark'] .text-muted {
+    color: #9198a1 !important;
+}
+
 [data-theme='dark'] .form-control {
     background-color: #1c2128 !important;
     border-color: #444c56 !important;

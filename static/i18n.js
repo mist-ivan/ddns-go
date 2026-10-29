@@ -31,10 +31,6 @@ const I18N_MAP = {
     'en': 'DNS Provider',
     'zh-cn': 'DNS服务商'
   },
-  'Create AccessKey': {
-    'en': 'Create AccessKey',
-    'zh-cn': '创建 AccessKey'
-  },
   'Auto': {
     'en': 'Auto',
     'zh-cn': '自动'
@@ -251,14 +247,6 @@ const I18N_MAP = {
   'History': {
     'en': 'History',
     'zh-cn': '历史记录'
-  },
-  'Last notification': {
-    'en': 'Last notification',
-    'zh-cn': '上次通知'
-  },
-  'Total records': {
-    'en': 'Total',
-    'zh-cn': '累计'
   },
   'No history yet': {
     'en': 'No history yet',

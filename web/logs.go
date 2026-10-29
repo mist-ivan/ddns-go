@@ -38,7 +38,12 @@ func Logs(writer http.ResponseWriter, request *http.Request) {
 	writer.Write(logs)
 }
 
-// ClearLog
+// ClearLog 清空内存日志。只接受 POST，避免跨站 GET 导航顺手清掉日志。
 func ClearLog(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		writer.Header().Set("Allow", http.MethodPost)
+		http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	mlogs.Logs = mlogs.Logs[:0]
 }

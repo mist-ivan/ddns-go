@@ -600,6 +600,7 @@ func TestHandleFetchHealthRetriesRecovery(t *testing.T) {
 	defer func() {
 		fetchTrackLock.Lock()
 		fetchTracker = fetchFailureTracker{}
+		fetchTrackerLoaded = true
 		fetchTrackLock.Unlock()
 	}()
 
@@ -617,6 +618,7 @@ func TestHandleFetchHealthRetriesRecovery(t *testing.T) {
 
 	fetchTrackLock.Lock()
 	fetchTracker = fetchFailureTracker{consecutive: fetchAlertThreshold, alerted: true}
+	fetchTrackerLoaded = true
 	fetchTrackLock.Unlock()
 
 	if got := handleFetchHealth(conf, status, "1.2.3.4", ""); got {
@@ -700,7 +702,7 @@ func TestEmailHistoryAppendAndSummarize(t *testing.T) {
 	AppendEmailHistory(EmailHistoryEntry{Kind: historyKindBaseline, IPv4: "1.1.1.1"})
 	AppendEmailHistory(EmailHistoryEntry{Kind: historyKindChange, IPv4: "2.2.2.2", PrevIPv4: "1.1.1.1"})
 
-	summary := GetEmailHistorySummary(5, "zh")
+	summary := GetEmailHistorySummary(5)
 	if summary.Total != 2 {
 		t.Fatalf("total = %d, want 2", summary.Total)
 	}
@@ -711,14 +713,11 @@ func TestEmailHistoryAppendAndSummarize(t *testing.T) {
 	if summary.Recent[0].IPv4 != "2.2.2.2" {
 		t.Fatalf("newest entry first expected, got %q", summary.Recent[0].IPv4)
 	}
-	if summary.Recent[0].KindText != "IP 变更" {
-		t.Fatalf("kind text = %q", summary.Recent[0].KindText)
+	if summary.Recent[0].Kind != historyKindChange {
+		t.Fatalf("kind = %q", summary.Recent[0].Kind)
 	}
-	if summary.Recent[0].TimeText == "" {
+	if summary.Recent[0].Time == 0 {
 		t.Fatal("time text should be filled")
-	}
-	if summary.LastTime == "" {
-		t.Fatal("last time should be filled")
 	}
 }
 
@@ -742,9 +741,9 @@ func TestEmailHistorySummaryOnEmptyFile(t *testing.T) {
 	withConfigPath(t, filepath.Join(dir, "config.yaml"))
 	_ = os.Remove(emailHistoryPath())
 
-	summary := GetEmailHistorySummary(5, "en")
-	if summary.Total != 0 || len(summary.Recent) != 0 || summary.LastTime != "" {
-		t.Fatalf("expected empty summary, got %+v", summary)
+	summary := GetEmailHistorySummary(5)
+	if summary.Total != 0 || len(summary.Recent) != 0 {
+		t.Fatalf("empty summary = %+v", summary)
 	}
 }
 
@@ -803,14 +802,14 @@ func TestClearEmailHistory(t *testing.T) {
 
 	AppendEmailHistory(EmailHistoryEntry{Kind: historyKindBaseline, IPv4: "1.1.1.1"})
 	AppendEmailHistory(EmailHistoryEntry{Kind: historyKindChange, IPv4: "2.2.2.2"})
-	if got := GetEmailHistorySummary(5, "zh").Total; got != 2 {
+	if got := GetEmailHistorySummary(5).Total; got != 2 {
 		t.Fatalf("total = %d, want 2", got)
 	}
 
 	if err := ClearEmailHistory(); err != nil {
 		t.Fatalf("clear failed: %v", err)
 	}
-	if got := GetEmailHistorySummary(5, "zh").Total; got != 0 {
+	if got := GetEmailHistorySummary(5).Total; got != 0 {
 		t.Fatalf("after clear total = %d, want 0", got)
 	}
 	// 清空不存在的文件也应返回 nil
@@ -864,6 +863,7 @@ func TestEmptyLangDefaultsToChinese(t *testing.T) {
 	}
 }
 
+
 // --- v0.7: AUTH 回退只在“机制不支持”时发生 ---
 
 func TestAuthMechanismUnsupported(t *testing.T) {
@@ -885,5 +885,68 @@ func TestAuthMechanismUnsupported(t *testing.T) {
 		if got := isAuthMechanismUnsupported(tc.err); got != tc.want {
 			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// --- v0.9: 密码强度阈值与告警状态持久化 ---
+
+func TestCheckPasswordWithLimit(t *testing.T) {
+	conf := &Config{}
+
+	// 20 位纯小写字母：内网阈值 25bit 可能通过，公网阈值 30bit 必须拒绝
+	weak := "abcdefghijklmnopqrst"
+
+	_, lanErr := conf.CheckPasswordWithLimit(weak, true)
+	_, wanErr := conf.CheckPasswordWithLimit(weak, false)
+
+	if lanErr == nil && wanErr != nil {
+		// 期望行为：放松模式下可过，严格模式下被拒
+		return
+	}
+	if wanErr == nil {
+		t.Fatalf("weak password passed the public threshold: %v", wanErr)
+	}
+	if lanErr != nil && wanErr != nil {
+		t.Logf("两种阈值都拒绝（密码太弱），也算符合预期: %v", wanErr)
+	}
+}
+
+func TestAlertedStatePersists(t *testing.T) {
+	dir := t.TempDir()
+	withConfigPath(t, filepath.Join(dir, "config.yaml"))
+
+	if loadEmailState().Alerted {
+		t.Fatal("fresh state should not be alerted")
+	}
+	setAlertedState(true)
+	if !loadEmailState().Alerted {
+		t.Fatal("alerted flag should be persisted")
+	}
+	setAlertedState(false)
+	if loadEmailState().Alerted {
+		t.Fatal("alerted flag should be cleared")
+	}
+}
+
+// 配置文件必须原子写：不能留下临时文件，且内容可解析
+func TestSaveConfigAtomic(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	withConfigPath(t, cfgPath)
+
+	conf := &Config{Lang: "zh"}
+	if err := conf.SaveConfig(); err != nil {
+		t.Fatalf("save failed: %v", err)
+	}
+
+	if _, err := os.Stat(cfgPath + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("temporary file should be renamed away, stat err = %v", err)
+	}
+	byt, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(byt), "lang: zh") {
+		t.Fatalf("saved config looks truncated: %q", string(byt))
 	}
 }

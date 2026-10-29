@@ -200,8 +200,33 @@ func (conf *Config) SaveConfig() (err error) {
 	}
 
 	configFilePath := util.GetConfigFilePath()
-	err = os.WriteFile(configFilePath, byt, 0600)
+	// 原子写：先写临时文件并落盘，再 rename 覆盖。
+	// 直接 WriteFile 会先截断原文件，写到一半断电/磁盘满就留下半截 YAML，下次启动直接解析失败。
+	tmpPath := configFilePath + ".tmp"
+	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
+		log.Println(err)
+		return
+	}
+	if _, err = f.Write(byt); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpPath)
+		log.Println(err)
+		return
+	}
+	if err = f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpPath)
+		log.Println(err)
+		return
+	}
+	if err = f.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		log.Println(err)
+		return
+	}
+	if err = os.Rename(tmpPath, configFilePath); err != nil {
+		_ = os.Remove(tmpPath)
 		log.Println(err)
 		return
 	}
@@ -234,8 +259,15 @@ func (conf *Config) ResetPassword(newPassword string) {
 
 // CheckPassword 检查密码
 func (conf *Config) CheckPassword(newPassword string) (hashedPwd string, err error) {
+	return conf.CheckPasswordWithLimit(newPassword, conf.NotAllowWanAccess)
+}
+
+// CheckPasswordWithLimit 按调用方给定的“是否仅内网访问”计算强度阈值。
+// 保存配置时必须传入保存前的值：同一次请求里把 NotAllowWanAccess 改成 true
+// 可以把阈值从 30bit 降到 25bit，之后取消勾选就留下一个弱密码。
+func (conf *Config) CheckPasswordWithLimit(newPassword string, lanOnly bool) (hashedPwd string, err error) {
 	var minEntropyBits float64 = 30
-	if conf.NotAllowWanAccess {
+	if lanOnly {
 		minEntropyBits = 25
 	}
 	err = passwordvalidator.Validate(newPassword, minEntropyBits)

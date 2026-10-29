@@ -241,6 +241,7 @@ lang: zh
 	}
 }
 
+
 // 同时提交“清除密码”与新密码时，新密码必须生效（v0.7 修复）
 func TestSaveNewPasswordWinsOverClear(t *testing.T) {
 	dir := t.TempDir()
@@ -295,8 +296,8 @@ func TestSaveFailureSkipsRunOnce(t *testing.T) {
 	t.Setenv(util.ConfigFilePathENV, filepath.Join(t.TempDir(), "missing-dir", "config.yaml"))
 	config.ResetConfigCache()
 
-	util.ForceCompareGlobal = false
-	defer func() { util.ForceCompareGlobal = false }()
+	util.ForceCompareGlobal.Store(false)
+	defer func() { util.ForceCompareGlobal.Store(false) }()
 
 	payload := `{
       "Username": "admin",
@@ -311,7 +312,47 @@ func TestSaveFailureSkipsRunOnce(t *testing.T) {
 	if strings.Contains(rec.Body.String(), `"result":"ok"`) {
 		t.Fatalf("save should have failed: %s", rec.Body.String())
 	}
-	if util.ForceCompareGlobal {
+	if util.ForceCompareGlobal.Load() {
 		t.Fatal("RunOnce must not be triggered when saving fails")
+	}
+}
+
+// 清空历史只接受 POST：GET 会被浏览器顶层导航带上 cookie，可被跨站触发
+func TestEmailHistoryClearRejectsGet(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("dnsconf: []\nlang: zh\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(util.ConfigFilePathENV, cfgPath)
+	config.ResetConfigCache()
+
+	rec := httptest.NewRecorder()
+	HandleEmailHistoryClear(rec, httptest.NewRequest("GET", "/emailHistoryClear", nil))
+	if rec.Code != 405 {
+		t.Fatalf("GET should be rejected with 405, got %d", rec.Code)
+	}
+
+	rec2 := httptest.NewRecorder()
+	HandleEmailHistoryClear(rec2, httptest.NewRequest("POST", "/emailHistoryClear", strings.NewReader("{}")))
+	if rec2.Code != 200 {
+		t.Fatalf("POST should be accepted, got %d", rec2.Code)
+	}
+}
+
+// 只有与已保存配置一致时才复用密码（否则等于把密码发给请求指定的任意服务器）
+func TestSameSMTPHost(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"smtp.qq.com", "SMTP.QQ.COM", true},
+		{"[::1]", "::1", true},
+		{"smtp.qq.com", "evil.example.com", false},
+	}
+	for _, tc := range cases {
+		if got := sameSMTPHost(tc.a, tc.b); got != tc.want {
+			t.Errorf("sameSMTPHost(%q,%q) = %v", tc.a, tc.b, got)
+		}
 	}
 }

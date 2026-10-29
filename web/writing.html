@@ -350,7 +350,7 @@
               <div class="form-group row">
                 <label class="col-sm-3 col-form-label"></label>
                 <div class="col-sm-9">
-                  <button data-i18n="Try it" class="webhook-button btn btn-primary btn-sm" id="webhookTestBtn"
+                  <button data-i18n="Try it" type="button" class="webhook-button btn btn-primary btn-sm" id="webhookTestBtn"
                     data-toggle="tooltip" data-i18n-attr="title:webhookTestTooltip">
                     Try it
                   </button>
@@ -389,7 +389,7 @@
                 <label data-i18n="Encryption" for="EmailEncrypt" class="col-sm-3 col-form-label">Encryption</label>
                 <div class="col-sm-9">
                   <select class="form-control form" name="EmailEncrypt" id="EmailEncrypt">
-                    <option value="ssl" {{if or (eq .Email.Encrypt "ssl") (and (eq .Email.Encrypt "") (ne .Email.SMTPPort 587) (ne .Email.SMTPPort 25))}}selected{{end}}>SSL / 隐式 TLS (465)
+                    <option value="ssl" {{if or (eq .Email.Encrypt "ssl") (and (eq .Email.Encrypt "") (or (eq .Email.SMTPPort 465) (eq .Email.SMTPPort 0)))}}selected{{end}}>SSL / 隐式 TLS (465)
                     </option>
                     <option value="starttls" {{if or (eq .Email.Encrypt "starttls") (and (eq .Email.Encrypt "") (eq .Email.SMTPPort 587))}}selected{{end}}>STARTTLS (587)</option>
                     <option value="none" {{if or (eq .Email.Encrypt "none") (and (eq .Email.Encrypt "") (eq .Email.SMTPPort 25))}}selected{{end}}>None / 不加密 (25)</option>
@@ -931,6 +931,13 @@
           });
         } else {
           globalConf.EmailPasswordClear = false;
+          // 保存成功后清掉输入框里的明文密码，否则它会残留在页面上，
+          // 之后再点"清除已保存的密码"会连同这个旧值一起提交，导致清除失效。
+          globalConf.EmailPassword = "";
+          const $pwd = document.getElementById("EmailPassword");
+          if ($pwd) $pwd.value = "";
+          const $pwdHint = document.getElementById("emailClearPwdHint");
+          if ($pwdHint) $pwdHint.textContent = "";
           showMessage({
             content: i18n({
               "en": "Successfully saved",
@@ -941,10 +948,7 @@
           });
           reloadConf(resp.dnsConf);
           // 保存后配置/密码可能变化，立刻刷新一次状态面板与历史
-          if (typeof refreshEmailPanel === "function") {
-            globalConf.EmailPasswordClear = false;
-            refreshEmailPanel();
-          }
+          refreshEmailPanel();
         }
       } catch (err) {
         alert(friendlyError(err));
@@ -1150,6 +1154,11 @@
 
   // 直到下次检测的倒计时（秒）
   function secondsToNextCheck(status) {
+    // 优先用服务端定时器算好的 nextRunAt：保存配置触发的立即执行不会重置定时器 sleep，
+    // 用 lastRunAt + interval 推算会把"下次检测"算晚一个周期。
+    if (status.nextRunAt) {
+      return status.nextRunAt - Math.floor(Date.now() / 1000);
+    }
     if (!status.lastRunAt || !status.intervalSeconds) return null;
     return status.lastRunAt + status.intervalSeconds - Math.floor(Date.now() / 1000);
   }
@@ -1180,6 +1189,8 @@
 
   let emailStatusCache = null;
   let emailStatusTimer = null;
+  // 最近一次状态请求的错误；非空时暂停用缓存重绘，避免把错误提示 1 秒内覆盖掉
+  let emailStatusError = "";
 
   function renderEmailStatus(status) {
     const el = document.getElementById("emailStatus");
@@ -1193,7 +1204,11 @@
 
     const notifiedText = [status.ipv4, status.ipv6].filter(Boolean).join(" / ") ||
       i18n({ "en": "none yet", "zh-cn": "尚无" });
-    lines.push(`<div><strong>${i18n({ "en": "Last notified IP", "zh-cn": "上次通知的 IP" })}:</strong> ${notifiedText}</div>`);
+    // 首轮只记基线、没发信时，这条 IP 从未"通知"过，不能标成"上次通知的 IP"
+    const notifiedLabel = status.hasNotified
+      ? i18n({ "en": "Last notified IP", "zh-cn": "上次通知的 IP" })
+      : i18n({ "en": "Baseline IP (not notified yet)", "zh-cn": "基线 IP（尚未通知）" });
+    lines.push(`<div><strong>${notifiedLabel}:</strong> ${notifiedText}</div>`);
 
     const lastCheck = status.lastRunAt
       ? `${absoluteTime(status.lastRunAt)}（${relativeTime(status.lastRunAt)}）`
@@ -1242,15 +1257,23 @@
   async function refreshEmailPanel() {
     try {
       const status = await request.get("./emailStatus");
-      if (!status || typeof status !== "object" || status.Code) {
-        throw new Error(friendlyError(status && status.Msg ? status.Msg : "emailStatus 返回异常"));
+      if (!status || typeof status !== "object") {
+        throw new Error("status payload is not an object");
       }
+      emailStatusError = "";
       emailStatusCache = status;
       renderEmailStatus(status);
       renderEmailHistory(status);
     } catch (err) {
+      emailStatusError = friendlyError(err);
       const el = document.getElementById("emailStatus");
-      if (el) el.innerHTML = `<span class="text-danger">${friendlyError(err)}</span>`;
+      if (el) {
+        el.textContent = "";
+        const $span = document.createElement("span");
+        $span.className = "text-danger";
+        $span.textContent = emailStatusError;
+        el.appendChild($span);
+      }
     }
   }
 
@@ -1260,7 +1283,8 @@
     if (emailStatusTimer) clearInterval(emailStatusTimer);
     let tick = 0;
     emailStatusTimer = setInterval(() => {
-      if (emailStatusCache) renderEmailStatus(emailStatusCache);
+      // 有错误时不拿旧缓存重绘：否则错误提示 1 秒就被过期数据替换掉
+      if (emailStatusCache && !emailStatusError) renderEmailStatus(emailStatusCache);
       if (++tick % 5 === 0) refreshEmailPanel();
     }, 1000);
   }
@@ -1300,6 +1324,9 @@
         "zh-cn": "确定清除已保存的 SMTP 密码吗？保存后生效。",
       }))) return;
       globalConf.EmailPasswordClear = true;
+      // 必须同时清掉输入框与内存里的明文：否则保存时"新密码优先"会把清除吞掉
+      globalConf.EmailPassword = "";
+      if ($emailPassword) $emailPassword.value = "";
       const $hint = document.getElementById("emailClearPwdHint");
       if ($hint) $hint.textContent = i18n({ "en": "will be cleared on save", "zh-cn": "保存后将清除" });
     });
@@ -1345,7 +1372,6 @@
     if ($result) $result.textContent = i18n({ "en": "sending…", "zh-cn": "发送中…" });
     try {
       const resp = await request.post("./emailTest", {
-        Enable: globalConf.EmailEnable,
         SMTPHost: globalConf.EmailSMTPHost,
         SMTPPort: globalConf.EmailSMTPPort,
         Username: globalConf.EmailUsername,

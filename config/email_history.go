@@ -30,17 +30,12 @@ type EmailHistoryEntry struct {
 	PrevIPv4 string `json:"prevIpv4,omitempty"`
 	IPv6     string `json:"ipv6,omitempty"`
 	PrevIPv6 string `json:"prevIpv6,omitempty"`
-
-	// 以下字段只用于页面展示，不写入文件
-	TimeText string `json:"-"`
-	KindText string `json:"-"`
 }
 
-// EmailHistorySummary 页面展示用的历史摘要
+// EmailHistorySummary 历史摘要：总条数 + 最近若干条（新的在前）
 type EmailHistorySummary struct {
-	Total    int
-	LastTime string
-	Recent   []EmailHistoryEntry
+	Total  int
+	Recent []EmailHistoryEntry
 }
 
 var emailHistoryLock sync.Mutex
@@ -125,8 +120,9 @@ func ClearEmailHistory() error {
 	return nil
 }
 
-// GetEmailHistorySummary 返回历史概要：总条数、最近一次时间、最近若干条（新的在前）
-func GetEmailHistorySummary(limit int, lang string) EmailHistorySummary {
+// GetEmailHistorySummary 返回历史概要：总条数 + 最近 limit 条（新的在前）。
+// 展示文案（时间格式、类型标签）统一交给前端按当前语言渲染，避免两份文案分叉。
+func GetEmailHistorySummary(limit int) EmailHistorySummary {
 	emailHistoryLock.Lock()
 	lines := readEmailHistoryLines(emailHistoryPath())
 	emailHistoryLock.Unlock()
@@ -141,47 +137,7 @@ func GetEmailHistorySummary(limit int, lang string) EmailHistorySummary {
 		if err := json.Unmarshal([]byte(lines[i]), &entry); err != nil {
 			continue
 		}
-		entry.TimeText = formatHistoryTime(entry.Time)
-		entry.KindText = historyKindText(entry.Kind, lang)
 		summary.Recent = append(summary.Recent, entry)
 	}
-	if len(summary.Recent) > 0 {
-		summary.LastTime = summary.Recent[0].TimeText
-	}
 	return summary
-}
-
-func formatHistoryTime(ts int64) string {
-	if ts <= 0 {
-		return "-"
-	}
-	return time.Unix(ts, 0).Format("2006-01-02 15:04:05")
-}
-
-func historyKindText(kind, lang string) string {
-	zh := strings.HasPrefix(strings.ToLower(lang), "zh")
-	switch kind {
-	case historyKindBaseline:
-		if zh {
-			return "首次基线"
-		}
-		return "baseline"
-	case historyKindChange:
-		if zh {
-			return "IP 变更"
-		}
-		return "IP changed"
-	case historyKindFetchFailed:
-		if zh {
-			return "获取 IP 失败"
-		}
-		return "fetch failed"
-	case historyKindRecovered:
-		if zh {
-			return "获取已恢复"
-		}
-		return "recovered"
-	default:
-		return kind
-	}
 }

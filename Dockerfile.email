@@ -3,7 +3,7 @@
 #   REV=$(git rev-parse --short HEAD)
 #   docker build -f Dockerfile.email \
 #     --build-arg REVISION=$REV \
-#     -t ddns-go-email:6.17.7-email-0.8 .
+#     -t ddns-go-email:6.17.7-email-0.9 .
 FROM golang:1.25-alpine AS builder
 
 WORKDIR /src
@@ -14,7 +14,7 @@ RUN go mod download
 
 COPY . .
 
-ARG VERSION=6.17.7-email-0.8
+ARG VERSION=6.17.7-email-0.9
 RUN CGO_ENABLED=0 go build -trimpath \
       -ldflags "-s -w -X main.version=${VERSION}" \
       -o /out/ddns-go .
@@ -22,7 +22,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
 # Alpine 3.21 于 2026-11-01 EOL，这里改用当前受支持的版本
 FROM alpine:3.24
 
-ARG VERSION=6.17.7-email-0.8
+ARG VERSION=6.17.7-email-0.9
 ARG REVISION=unknown
 
 # 注意：故意不设置 org.opencontainers.image.source。
@@ -47,6 +47,10 @@ EXPOSE 9876
 
 # 配置文件默认位于 /root/.ddns_go_config.yaml，挂载 /root 即可持久化
 VOLUME ["/root"]
+
+# 容器内自带 curl：健康检查直接探登录页（该页免认证，返回 200 即可）
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -fsS -o /dev/null http://127.0.0.1:9876/login || exit 1
 
 ENTRYPOINT ["/app/ddns-go"]
 CMD ["-l", ":9876", "-f", "600"]

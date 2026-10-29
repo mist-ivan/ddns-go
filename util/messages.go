@@ -31,7 +31,7 @@ func init() {
 	message.SetString(language.English, "你的IPv6未变化, 未触发 %s 请求", "Your IPv6 has not changed, %s request has not been triggered")
 	message.SetString(language.English, "Namecheap 不支持更新 IPv6", "Namecheap does not support IPv6")
 
-	message.SetString(language.English, "dynadot仅支持单域名配置, 多个域名请添加更多配置", "dynadot only supports single domain configuration, please add more configurations")
+	message.SetString(language.English, "dynadot仅支持单域名配置，多个域名请添加更多配置", "dynadot only supports single domain configuration, please add more configurations")
 
 	// http_util
 	message.SetString(language.English, "异常信息: %s", "Exception: %s")
@@ -69,6 +69,29 @@ func init() {
 	message.SetString(language.English, "邮件通知: 历史记录已清空", "Email notification: history cleared")
 	message.SetString(language.English, "邮件通知: 清空历史记录失败: %s", "Email notification: failed to clear history: %s")
 	message.SetString(language.English, "清空历史记录失败: %s", "Failed to clear history: %s")
+	message.SetString(language.English, "不支持的加密方式: %s", "Unsupported encryption mode: %s")
+	message.SetString(language.English, "发件人地址不合法: %s", "Invalid sender address: %s")
+	message.SetString(language.English, "收件人不能为空", "Recipient list must not be empty")
+	message.SetString(language.English, "收件人地址不合法: %s", "Invalid recipient address: %s")
+	message.SetString(language.English, "SMTP 服务器不能为空", "SMTP server must not be empty")
+	message.SetString(language.English, "SMTP 服务器不能包含空白字符", "SMTP server must not contain whitespace")
+	message.SetString(language.English, "SMTP 服务器只填主机名，端口请填在端口输入框", "Put only the hostname here; the port goes in the port field")
+	message.SetString(language.English, "SMTP 端口不合法: %d", "Invalid SMTP port: %d")
+	message.SetString(language.English, "SMTP 端口不合法: %s", "Invalid SMTP port: %s")
+	message.SetString(language.English, "拒绝在未加密的 SMTP 连接上发送账号密码，请改用 SSL 或 STARTTLS", "Refusing to send credentials over an unencrypted SMTP connection; use SSL or STARTTLS")
+	message.SetString(language.English, "发件人不能为空", "Sender address must not be empty")
+	message.SetString(language.English, "连接 SMTP 服务器失败: %s", "Failed to connect to the SMTP server: %s")
+	message.SetString(language.English, "初始化 SMTP 会话失败: %s", "Failed to initialise the SMTP session: %s")
+	message.SetString(language.English, "SMTP 服务器不支持 STARTTLS", "The SMTP server does not support STARTTLS")
+	message.SetString(language.English, "STARTTLS 失败: %s", "STARTTLS failed: %s")
+	message.SetString(language.English, "SMTP 服务器未宣告支持认证（AUTH），已配置的账号密码无法使用", "The SMTP server does not advertise AUTH, so the configured credentials cannot be used")
+	message.SetString(language.English, "SMTP 认证被拒绝: %s", "SMTP authentication rejected: %s")
+	message.SetString(language.English, "MAIL FROM 被拒绝: %s", "MAIL FROM rejected: %s")
+	message.SetString(language.English, "RCPT TO(%s) 被拒绝: %s", "RCPT TO(%s) rejected: %s")
+	message.SetString(language.English, "DATA 被拒绝: %s", "DATA rejected: %s")
+	message.SetString(language.English, "写入邮件内容失败: %s", "Failed to write the message body: %s")
+	message.SetString(language.English, "提交邮件内容失败: %s", "Failed to submit the message body: %s")
+	message.SetString(language.English, "操作过于频繁，请稍后再试", "Too many requests, please retry later")
 	message.SetString(language.English, "邮件通知: 写入历史记录失败: %v %v", "Email notification: failed to write history: %v %v")
 	message.SetString(language.English, "邮件测试失败: %s", "Email test failed: %s")
 	message.SetString(language.English, "邮件测试成功，已发送至: %s", "Email test succeeded, sent to: %s")
@@ -76,7 +99,7 @@ func init() {
 	// callback
 	message.SetString(language.English, "Callback的URL不正确", "Callback URL is incorrect")
 	message.SetString(language.English, "Callback调用成功, 域名: %s, IP: %s, 返回数据: %s", "Successfully called Callback! Domain: %s, IP: %s, Response body: %s")
-	message.SetString(language.English, "Callback调用失败, 异常信息: %s", "Failed to call Callback! Exception: %s")
+	message.SetString(language.English, "Callback调用失败, 异常信息: %v", "Failed to call Callback! Exception: %s")
 
 	// save
 	message.SetString(language.English, "必须输入用户名/密码", "Username/Password is required")
