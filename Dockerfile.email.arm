@@ -1,0 +1,73 @@
+# ARMv7 (hi3798mv100 / armv7l) build of the ddns-go-email fork.
+#
+# Build on an amd64 host without QEMU:
+#   docker buildx build --platform linux/arm/v7 \
+#     -f Dockerfile.email.arm \
+#     --build-arg VERSION=6.17.7-email-ARM0.10 \
+#     --build-arg REVISION=$(git rev-parse --short HEAD) \
+#     -t ddns-go-email:6.17.7-email-ARM0.10 --load .
+#
+# The Go binary is cross-compiled on BUILDPLATFORM and the final image is
+# assembles from scratch. No ARM executable is run during the build, so no
+# QEMU/binfmt setup is required. A static Go binary is also the safest choice
+# for the old 4.4 kernel on the hi3798mv100.
+
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+
+WORKDIR /src
+
+# Dependencies are cached separately from the source.
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+ARG VERSION=6.17.7-email-ARM0.10
+ARG TARGETOS
+ARG TARGETARCH
+ARG TARGETVARIANT
+
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOARM=${TARGETVARIANT#v} \
+      go build -trimpath \
+      -ldflags "-s -w -X main.version=${VERSION}" \
+      -o /out/ddns-go .
+
+# Architecture-independent CA certificates and timezone data.
+FROM --platform=$BUILDPLATFORM alpine:3.24 AS tools
+
+RUN apk add --no-cache ca-certificates tzdata
+
+FROM scratch
+
+ARG VERSION=6.17.7-email-ARM0.10
+ARG REVISION=unknown
+
+LABEL org.opencontainers.image.title="ddns-go-email" \
+      org.opencontainers.image.description="ddns-go fork: send an email when the public IP changes (ARMv7, static)" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${REVISION}" \
+      org.opencontainers.image.url="https://hub.docker.com/r/ivanzzffii/ddns-go-email" \
+      org.opencontainers.image.base.name="scratch" \
+      org.opencontainers.image.licenses="MIT"
+
+# Static Go binary plus the runtime data it may need: CA roots for HTTPS/SMTP,
+# zoneinfo for TZ=Asia/Shanghai, and passwd/group for os.UserHomeDir().
+COPY --from=builder /out/ddns-go /app/ddns-go
+COPY --from=tools /etc/ssl/certs /etc/ssl/certs
+COPY --from=tools /usr/share/zoneinfo /usr/share/zoneinfo
+COPY --from=tools /etc/passwd /etc/passwd
+COPY --from=tools /etc/group /etc/group
+# Create writable /tmp and /root mount points; the files are placeholders only.
+COPY --from=tools /etc/passwd /tmp/.keep
+COPY --from=tools /etc/passwd /root/.keep
+
+ENV TZ=Asia/Shanghai
+EXPOSE 9876
+
+# Configuration and email state live under /root; mount a volume to persist them.
+VOLUME ["/root"]
+
+# There is intentionally no HEALTHCHECK: the scratch image has no shell or
+# curl. The container's running state can be monitored from Docker itself.
+ENTRYPOINT ["/app/ddns-go"]
+CMD ["-l", ":9876", "-f", "600"]
