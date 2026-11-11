@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -67,6 +68,8 @@ func checkAndSave(request *http.Request) string {
 
 	// 记住保存前的值：同一次请求里把它改成 true 会放松密码强度要求
 	wasLanOnly := conf.NotAllowWanAccess
+	// 记住保存前的邮件配置：SMTP 参数变化后要解除发送退避
+	oldEmail := conf.Email
 	conf.NotAllowWanAccess = data.NotAllowWanAccess
 	conf.WebhookURL = strings.TrimSpace(data.WebhookURL)
 	conf.WebhookRequestBody = strings.TrimSpace(data.WebhookRequestBody)
@@ -173,6 +176,12 @@ func checkAndSave(request *http.Request) string {
 	// 否则界面提示保存失败，后台却已经用新配置跑了一轮（可能发信、改 DNS）。
 	if err = conf.SaveConfig(); err != nil {
 		return err.Error()
+	}
+
+	// SMTP 配置改过就解除退避：否则即使立刻修好，真实通知仍会被退避期
+	// 静默压制最长 60 分钟，而"发送测试邮件"却能成功，极易被误判成功能故障。
+	if !reflect.DeepEqual(oldEmail, conf.Email) {
+		config.ResetEmailBackoff()
 	}
 
 	// 只运行一次

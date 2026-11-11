@@ -4,7 +4,7 @@
 新增「公网 IP 变更时发送邮件提醒」功能。其余行为与原版一致。
 
 - 源码：`/home/mist/work/ddns-go`（分支 `main`，以仓库当前 HEAD 为准）
-- 镜像：`ddns-go-email:6.17.7-email-0.12`（约 40 MB，多阶段构建）
+- 镜像：`ddns-go-email:6.17.7-email-0.13`（约 40 MB，多阶段构建）
 - 测试：`/home/mist/work/test`（假 SMTP + 假回调，可随时重跑）
 
 > **不要使用 `-u` 参数。** 它会从上游 GitHub releases 下载官方二进制覆盖自身，
@@ -68,7 +68,7 @@ fork 版把默认检测间隔从 300 秒改为 **600 秒（10 分钟）**：
 ```bash
 docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.12 -l :9876 -f 120
+  ddns-go-email:6.17.7-email-0.13 -l :9876 -f 120
 ```
 
 ## 配置字段
@@ -113,7 +113,7 @@ cd ddns-go && git log --oneline -1        # 应看到对应的版本提交
 
 ```bash
 cd /home/mist/work/ddns-go
-sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.12 .
+sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.13 .
 ```
 
 ## 运行
@@ -122,7 +122,7 @@ sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.12 .
 sudo docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 \
   -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.12
+  ddns-go-email:6.17.7-email-0.13
 ```
 
 打开 `http://<主机IP>:9876`，配置 DNS 与邮件通知后保存即可。
@@ -146,6 +146,25 @@ python3 /home/mist/work/test/verify_mail.py
 - IP 未变 → 不重复发送
 
 ## 更新记录
+
+### 6.17.7-email-0.13
+
+按**功能级端到端复核**（真镜像 + 假 IP 接口 + 假 SMTP，覆盖基线/去重/变更/重启/告警/恢复/双源/退避）修的两处静默失效，外加一轮可用性改进。
+
+| 级别 | 问题 | 修复 |
+|---|---|---|
+| P2 | **多配置源同一轮变更只通知第一个源**：邮件取 `changes[0]`，但循环里对**每个源**都推进了基线。实测两源同时变更只收到 1 封，而状态文件里两个源的基线都已更新——第二个源的变更**永久丢失**，正文也不说明是哪个源变的 | 把本轮所有变更汇总成一封，正文按「配置: <源名>」逐条列出；历史记录也按源逐条写入。仍保证「每轮最多一封」 |
+| P2 | **退避期没有任何解除路径**：SMTP 配错一次后，改好配置、点测试发信成功、甚至重启容器，真实通知仍被静默压制 10~60 分钟，且无日志、无界面提示 | ① 保存配置时若 SMTP 字段有变化，立即 `ResetEmailBackoff()`；②「发送测试邮件」成功后同样解除；③ 退避首次生效时打一条日志；④ 状态面板显示退避倒计时 |
+| P3 | 恢复通知与变更通知会**连发两封**：故障期间 IP 变了，恢复轮发「已恢复」，下一轮又发「IP 变更: 旧 → 新」 | 恢复邮件合并「故障期间检测到的变更」，发信成功后推进基线，不再补发 |
+| P3 | 邮件缺 `Message-ID` 头，是常见的垃圾邮件评分项（QQ/163/Outlook 更容易判垃圾） | 补 `Message-ID: <纳秒.进程.序号@主机名>`，主机名做字符白名单清洗 |
+| P3 | `RunOnceAsync` 在已有任务排队时**直接丢弃**新触发，保存配置后可能要等下一个定时周期（默认 600 秒）才生效 | 改为排队计数（1 个在跑 + 1 个在等），再多才合并 |
+| P3 | 历史记录不记来源，多配置时分不清是哪个源变的 | `EmailHistoryEntry` 增加 `source` 字段（旧文件缺该字段可正常解析），面板历史列表显示 |
+
+**文档补充**：必须挂载 `/root` **目录**而不是单个配置文件。只读挂载单文件时状态写不进去，`OnStart` 开启时每次重启都会重发一封基线邮件。
+
+新增测试：`TestComposeIPChangeMailMultiSource`、`TestComposeIPChangeMailMultiSourceEN`、`TestBuildMessageIDIsValidAndUnique`、`TestResetEmailBackoffClearsState`、`TestGetEmailBackoffUntil`、`TestComposeRecoveredMailMentionsChanges`。
+
+已知未处理：配置源改名后旧状态键不清理（0.10 起既有问题）；SMTP 密码仍以明文存于配置文件（0600，协议所限）。
 
 ### 6.17.7-email-0.12
 

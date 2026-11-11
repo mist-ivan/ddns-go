@@ -25,8 +25,10 @@ const (
 
 // EmailHistoryEntry 一次通知的历史记录（一行 JSON）
 type EmailHistoryEntry struct {
-	Time     int64  `json:"time"`
-	Kind     string `json:"kind"`
+	Time int64  `json:"time"`
+	Kind string `json:"kind"`
+	// Source 变更来自哪个配置源（0.13 起记录，旧文件缺这个字段不影响解析）
+	Source   string `json:"source,omitempty"`
 	IPv4     string `json:"ipv4,omitempty"`
 	PrevIPv4 string `json:"prevIpv4,omitempty"`
 	IPv6     string `json:"ipv6,omitempty"`

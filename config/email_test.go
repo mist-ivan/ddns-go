@@ -85,7 +85,7 @@ func TestBuildMailMessageStripsHeaderInjection(t *testing.T) {
 
 func TestComposeIPChangeMailChangeZH(t *testing.T) {
 	conf := &Config{Lang: "zh"}
-	subject, body := composeIPChangeMail(conf, sourceChange{PrevIPv4: "1.1.1.1", IPv4: "2.2.2.2"}, false)
+	subject, body := composeIPChangeMail(conf, []sourceChange{{PrevIPv4: "1.1.1.1", IPv4: "2.2.2.2"}}, false)
 
 	if !strings.Contains(subject, "1.1.1.1") || !strings.Contains(subject, "2.2.2.2") {
 		t.Fatalf("subject should contain old and new IP: %s", subject)
@@ -97,7 +97,7 @@ func TestComposeIPChangeMailChangeZH(t *testing.T) {
 
 func TestComposeIPChangeMailBaselineEN(t *testing.T) {
 	conf := &Config{Lang: "en"}
-	_, body := composeIPChangeMail(conf, sourceChange{IPv4: "2.2.2.2"}, true)
+	_, body := composeIPChangeMail(conf, []sourceChange{{IPv4: "2.2.2.2"}}, true)
 
 	if !strings.Contains(body, "first recorded IP baseline") {
 		t.Fatalf("english baseline body missing: %s", body)
@@ -109,7 +109,7 @@ func TestComposeIPChangeMailBaselineEN(t *testing.T) {
 
 func TestComposeIPChangeMailIPv6Only(t *testing.T) {
 	conf := &Config{Lang: "zh"}
-	subject, _ := composeIPChangeMail(conf, sourceChange{PrevIPv6: "2001:db8::1", IPv6: "2001:db8::2"}, false)
+	subject, _ := composeIPChangeMail(conf, []sourceChange{{PrevIPv6: "2001:db8::1", IPv6: "2001:db8::2"}}, false)
 	if !strings.Contains(subject, "IPv6") || !strings.Contains(subject, "2001:db8::2") {
 		t.Fatalf("IPv6-only subject is wrong: %s", subject)
 	}
@@ -621,7 +621,7 @@ func TestHandleFetchHealthRetriesRecovery(t *testing.T) {
 	fetchTrackerLoaded = true
 	fetchTrackLock.Unlock()
 
-	if _, got := handleFetchHealth(conf, status, "1.2.3.4", ""); got {
+	if _, got := handleFetchHealth(conf, status, "1.2.3.4", "", nil); got {
 		t.Fatal("first recovery send should fail")
 	}
 	fetchTrackLock.Lock()
@@ -636,7 +636,7 @@ func TestHandleFetchHealthRetriesRecovery(t *testing.T) {
 	state.NextRetryAt = 0
 	storeEmailState(state)
 
-	if _, got := handleFetchHealth(conf, status, "1.2.3.4", ""); !got {
+	if _, got := handleFetchHealth(conf, status, "1.2.3.4", "", nil); !got {
 		t.Fatal("second recovery send should succeed after the backoff window")
 	}
 	waitForMessages(t, srv, 1)
@@ -867,7 +867,6 @@ func TestEmptyLangDefaultsToChinese(t *testing.T) {
 		t.Fatalf("explicit lang should be preserved, got %q", conf2.Lang)
 	}
 }
-
 
 // --- v0.7: AUTH 回退只在“机制不支持”时发生 ---
 

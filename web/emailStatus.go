@@ -26,6 +26,8 @@ type emailStatusPayload struct {
 	// 最近一轮实际检测到的公网 IP（区别于"上次成功通知的 IP"）
 	DetectedIPv4 string `json:"detectedIpv4"`
 	DetectedIPv6 string `json:"detectedIpv6"`
+	// BackoffUntil 发信失败后的退避截止时间（unix 秒），0 表示不在退避期
+	BackoffUntil int64 `json:"backoffUntil"`
 }
 
 // HandleEmailStatus 返回邮件通知模块的运行状态，供页面状态面板轮询
@@ -54,6 +56,7 @@ func HandleEmailStatus(writer http.ResponseWriter, request *http.Request) {
 		NextRunAt:       dns.NextRunAt(),
 		DetectedIPv4:    detectedIPv4,
 		DetectedIPv6:    detectedIPv6,
+		BackoffUntil:    config.GetEmailBackoffUntil(),
 	}
 
 	writer.Header().Set("Content-Type", "application/json; charset=utf-8")

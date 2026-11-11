@@ -94,17 +94,22 @@ func RunTimer(delay time.Duration) {
 	}
 }
 
-// pendingRun 保证同一时刻最多只有一个"保存后立即执行"的任务在排队
-var pendingRun atomic.Bool
+// pendingRuns 记录"保存后立即执行"的排队数量：1 表示正在跑，2 表示还有一个在等。
+// 用计数而非布尔值：原实现里"已有任务在跑"时新的触发会被直接丢弃，
+// 用户保存配置后可能要等下一个定时周期（默认 10 分钟）才生效。
+var pendingRuns atomic.Int32
 
-// RunOnceAsync 异步触发一次检测；已有排队任务时直接跳过。
-// 连点保存不应堆出一串 goroutine（每个都要等上一次跑完，最长可达数分钟）。
+// maxPendingRuns 允许 1 个在跑 + 1 个在等，再多就合并掉，避免连点保存堆 goroutine
+const maxPendingRuns = 2
+
+// RunOnceAsync 异步触发一次检测；排队已满时跳过（合并为下一轮）。
 func RunOnceAsync() {
-	if !pendingRun.CompareAndSwap(false, true) {
+	if pendingRuns.Add(1) > maxPendingRuns {
+		pendingRuns.Add(-1)
 		return
 	}
 	go func() {
-		defer pendingRun.Store(false)
+		defer pendingRuns.Add(-1)
 		RunOnce()
 	}()
 }
@@ -116,7 +121,7 @@ func RunOnceAsync() {
 // 污染下一个用例的断言（实测 HEAD 上 8 次全量测试偶发失败 2 次）。
 func WaitPendingRun(timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
-	for pendingRun.Load() && time.Now().Before(deadline) {
+	for pendingRuns.Load() > 0 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }

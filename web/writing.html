@@ -1231,6 +1231,14 @@
 
     lines.push(`<div><strong>${i18n({ "en": "Total records", "zh-cn": "历史记录" })}:</strong> ${status.historyTotal}</div>`);
 
+    if (status.backoffUntil && status.backoffUntil * 1000 > Date.now()) {
+      const left = Math.max(1, Math.round((status.backoffUntil * 1000 - Date.now()) / 1000));
+      lines.push(`<div class="text-warning">${i18n({
+        "en": `Sending is paused after a failure; retrying in ${left}s`,
+        "zh-cn": `发信失败已暂停，约 ${left} 秒后重试`,
+      })}</div>`);
+    }
+
     if (!status.emailEnabled) {
       lines.push(`<div class="text-warning">${i18n({ "en": "Email notification is disabled", "zh-cn": "邮件通知当前未启用" })}</div>`);
     }
@@ -1249,7 +1257,8 @@
       const ip = entry.ipv4
         ? ` · IPv4 ${entry.ipv4}${entry.prevIpv4 ? " ← " + entry.prevIpv4 : ""}`
         : (entry.ipv6 ? ` · IPv6 ${entry.ipv6}${entry.prevIpv6 ? " ← " + entry.prevIpv6 : ""}` : "");
-      return `<li style="margin:2px 0">${absoluteTime(entry.time)} ${kindBadge(entry)}${ip}</li>`;
+      const source = entry.source ? ` · ${entry.source}` : "";
+      return `<li style="margin:2px 0">${absoluteTime(entry.time)} ${kindBadge(entry)}${source}${ip}</li>`;
     }).join("");
     el.innerHTML = `<ul class="mb-1" style="padding-left:1.2em">${items}</ul>`;
   }

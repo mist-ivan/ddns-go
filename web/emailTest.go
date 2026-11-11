@@ -94,6 +94,10 @@ func EmailTest(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 
+	// 测试邮件能发出去，说明故障已排除：顺手解除退避，
+	// 否则真实通知还要继续等退避期结束，用户会以为"测试成功但通知还是坏的"。
+	config.ResetEmailBackoff()
+
 	util.Log("邮件测试成功，已发送至: %s", email.To)
 	emailTestResult(writer, true, "")
 }
