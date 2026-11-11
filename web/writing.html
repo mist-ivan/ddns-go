@@ -389,10 +389,10 @@
                 <label data-i18n="Encryption" for="EmailEncrypt" class="col-sm-3 col-form-label">Encryption</label>
                 <div class="col-sm-9">
                   <select class="form-control form" name="EmailEncrypt" id="EmailEncrypt">
-                    <option value="ssl" {{if or (eq .Email.Encrypt "ssl") (and (eq .Email.Encrypt "") (or (eq .Email.SMTPPort 465) (eq .Email.SMTPPort 0)))}}selected{{end}}>SSL / 隐式 TLS (465)
-                    </option>
-                    <option value="starttls" {{if or (eq .Email.Encrypt "starttls") (and (eq .Email.Encrypt "") (eq .Email.SMTPPort 587))}}selected{{end}}>STARTTLS (587)</option>
-                    <option value="none" {{if or (eq .Email.Encrypt "none") (and (eq .Email.Encrypt "") (eq .Email.SMTPPort 25))}}selected{{end}}>None / 不加密 (25)</option>
+                    <option value="" data-i18n="Auto (by port)" {{if eq .Email.Encrypt ""}}selected{{end}}>Auto (by port)</option>
+                    <option value="ssl" {{if eq .Email.Encrypt "ssl"}}selected{{end}}>SSL / 隐式 TLS (465)</option>
+                    <option value="starttls" {{if eq .Email.Encrypt "starttls"}}selected{{end}}>STARTTLS (587)</option>
+                    <option value="none" {{if eq .Email.Encrypt "none"}}selected{{end}}>None / 不加密 (25)</option>
                   </select>
                   <small data-i18n-html="EmailEncryptHelp" id="EmailEncryptHelp" class="form-text text-muted"></small>
                 </div>
@@ -675,11 +675,10 @@
   const smtpEncryptByPort = { "465": "ssl", "587": "starttls", "25": "none" };
   if ($smtpPort && $smtpEncrypt) {
     $smtpPort.addEventListener('change', () => {
-      const encrypt = smtpEncryptByPort[String($smtpPort.value).trim()];
-      if (encrypt) {
-        $smtpEncrypt.value = encrypt;
-        globalConf.EmailEncrypt = encrypt;
-      }
+      // 未知端口回到“自动”，由后端按端口推断；不要保留旧加密方式。
+      const encrypt = smtpEncryptByPort[String($smtpPort.value).trim()] || "";
+      $smtpEncrypt.value = encrypt;
+      globalConf.EmailEncrypt = encrypt;
     });
   }
 
@@ -782,11 +781,11 @@
   // 拼接新的配置项到下拉菜单
   function appendConfigToIndex(idx) {
     const $index = document.getElementById('index');
-
-    const $option = html2Element(`
-        <option id="index_${idx}" value="${idx}">
-          ${getConfName(idx)}
-        </option>`);
+    const $option = document.createElement('option');
+    $option.id = `index_${idx}`;
+    $option.value = String(idx);
+    // 配置名是用户输入，必须用 textContent，不能拼 HTML。
+    $option.textContent = getConfName(idx);
     $index.append($option);
   }
 
@@ -1052,7 +1051,7 @@
   document.getElementById("clearLogBtn").addEventListener('click', async e => {
     e.preventDefault();
     try {
-      await request.get("./clearLog");
+      await request.post("./clearLog", {});
       getLogs();
     } catch (err) {
       showMessage({
@@ -1184,7 +1183,18 @@
 
   function kindBadge(entry) {
     const style = BADGE_STYLE[entry.kind] || "background:#6e7681;color:#fff";
-    return `<span style="display:inline-block;padding:0 6px;border-radius:3px;font-size:12px;${style}">${kindText(entry.kind)}</span>`;
+    return `<span style="display:inline-block;padding:0 6px;border-radius:3px;font-size:12px;${style}">${escapeHtml(kindText(entry.kind))}</span>`;
+  }
+
+  // 历史记录里的 source/IP 来自配置文件与历史文件，必须转义后再拼 HTML。
+  function escapeHtml(value) {
+    return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    }[ch]));
   }
 
   let emailStatusCache = null;
@@ -1206,8 +1216,8 @@
       i18n({ "en": "none yet", "zh-cn": "尚无" });
     // 首轮只记基线、没发信时，这条 IP 从未"通知"过，不能标成"上次通知的 IP"
     const notifiedLabel = status.hasNotified
-      ? i18n({ "en": "Last notified IP", "zh-cn": "上次通知的 IP" })
-      : i18n({ "en": "Baseline IP (not notified yet)", "zh-cn": "基线 IP（尚未通知）" });
+      ? i18n({ "en": "Last change-notified IP", "zh-cn": "上次变更通知的 IP" })
+      : i18n({ "en": "Baseline IP (no change notice yet)", "zh-cn": "基线 IP（尚无变更通知）" });
     lines.push(`<div><strong>${notifiedLabel}:</strong> ${notifiedText}</div>`);
 
     const lastCheck = status.lastRunAt
@@ -1254,10 +1264,14 @@
       return;
     }
     const items = recent.map((entry) => {
+      const ipv4 = escapeHtml(entry.ipv4 || "");
+      const prevIpv4 = escapeHtml(entry.prevIpv4 || "");
+      const ipv6 = escapeHtml(entry.ipv6 || "");
+      const prevIpv6 = escapeHtml(entry.prevIpv6 || "");
       const ip = entry.ipv4
-        ? ` · IPv4 ${entry.ipv4}${entry.prevIpv4 ? " ← " + entry.prevIpv4 : ""}`
-        : (entry.ipv6 ? ` · IPv6 ${entry.ipv6}${entry.prevIpv6 ? " ← " + entry.prevIpv6 : ""}` : "");
-      const source = entry.source ? ` · ${entry.source}` : "";
+        ? ` · IPv4 ${ipv4}${entry.prevIpv4 ? " ← " + prevIpv4 : ""}`
+        : (entry.ipv6 ? ` · IPv6 ${ipv6}${entry.prevIpv6 ? " ← " + prevIpv6 : ""}` : "");
+      const source = entry.source ? ` · ${escapeHtml(entry.source)}` : "";
       return `<li style="margin:2px 0">${absoluteTime(entry.time)} ${kindBadge(entry)}${source}${ip}</li>`;
     }).join("");
     el.innerHTML = `<ul class="mb-1" style="padding-left:1.2em">${items}</ul>`;

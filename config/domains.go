@@ -11,12 +11,14 @@ import (
 
 // Domains Ipv4/Ipv6 domains
 type Domains struct {
-	Ipv4Addr    string
-	Ipv4Cache   *util.IpCache
-	Ipv4Domains []*Domain
-	Ipv6Addr    string
-	Ipv6Cache   *util.IpCache
-	Ipv6Domains []*Domain
+	Ipv4Addr       string
+	Ipv4Configured bool // 启用了 IPv4 且至少解析出一个合法域名
+	Ipv4Cache      *util.IpCache
+	Ipv4Domains    []*Domain
+	Ipv6Addr       string
+	Ipv6Configured bool // 启用了 IPv6 且至少解析出一个合法域名
+	Ipv6Cache      *util.IpCache
+	Ipv6Domains    []*Domain
 }
 
 // Domain 域名实体
@@ -102,6 +104,11 @@ func (d Domain) ToASCII() string {
 func (domains *Domains) GetNewIp(dnsConf *DnsConfig) {
 	domains.Ipv4Domains = checkParseDomains(dnsConf.Ipv4.Domains)
 	domains.Ipv6Domains = checkParseDomains(dnsConf.Ipv6.Domains)
+	// 只有启用了该地址族且至少有一个合法域名，才算“期望拿到地址”。
+	// 这里用解析后的域名数，而不是原始字符串：非法域名不会发起 IP 请求，
+	// 不应被误算成取 IP 失败。
+	domains.Ipv4Configured = dnsConf.Ipv4.Enable && len(domains.Ipv4Domains) > 0
+	domains.Ipv6Configured = dnsConf.Ipv6.Enable && len(domains.Ipv6Domains) > 0
 
 	// IPv4
 	if dnsConf.Ipv4.Enable && len(domains.Ipv4Domains) > 0 {

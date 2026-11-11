@@ -3,9 +3,9 @@
 基于 [jeessy2/ddns-go](https://github.com/jeessy2/ddns-go) **v6.17.7**（commit `7aad574`）的定制分支，
 新增「公网 IP 变更时发送邮件提醒」功能。其余行为与原版一致。
 
-- 源码：`/home/mist/work/ddns-go`（分支 `main`，以仓库当前 HEAD 为准）
-- 镜像：`ddns-go-email:6.17.7-email-0.13`（约 40 MB，多阶段构建）
-- 测试：`/home/mist/work/test`（假 SMTP + 假回调，可随时重跑）
+- 源码：`/home/mist/work/ddns-go`（分支 `v0.14`，以仓库当前 HEAD 为准）
+- 镜像：`ddns-go-email:6.17.7-email-0.14`（多阶段构建，已移除 curl/grep）
+- 测试：`/home/mist/emailtest`（假 SMTP + 假回调，可随时重跑）
 
 > **不要使用 `-u` 参数。** 它会从上游 GitHub releases 下载官方二进制覆盖自身，
 > 邮件通知功能会随之丢失，且不可逆（需要重新拉镜像）。同理不要用 `-s install` 在本镜像内装服务。
@@ -68,7 +68,7 @@ fork 版把默认检测间隔从 300 秒改为 **600 秒（10 分钟）**：
 ```bash
 docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.13 -l :9876 -f 120
+  ddns-go-email:6.17.7-email-0.14 -l :9876 -f 120
 ```
 
 ## 配置字段
@@ -113,7 +113,11 @@ cd ddns-go && git log --oneline -1        # 应看到对应的版本提交
 
 ```bash
 cd /home/mist/work/ddns-go
-sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.13 .
+REV=$(git rev-parse --short HEAD)
+sudo docker build -f Dockerfile.email \
+  --build-arg REVISION=$REV \
+  -t ddns-go-email:6.17.7-email-0.14 \
+  -t ivanzzffii/ddns-go-email:6.17.7-email-0.14 .
 ```
 
 ## 运行
@@ -122,7 +126,7 @@ sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.13 .
 sudo docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 \
   -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.13
+  ddns-go-email:6.17.7-email-0.14
 ```
 
 打开 `http://<主机IP>:9876`，配置 DNS 与邮件通知后保存即可。
@@ -146,6 +150,30 @@ python3 /home/mist/work/test/verify_mail.py
 - IP 未变 → 不重复发送
 
 ## 更新记录
+
+### 6.17.7-email-0.14
+
+按 0.13 的审查报告修复 P2/P3，并优化镜像体积。镜像从 Alpine 运行时中移除 `curl`/`grep`，健康检查改用 BusyBox `wget`；构建加 `-buildid=`，便于复现。
+
+| 级别 | 问题 | 修复 |
+|---|---|---|
+| P2 | 首轮同时触发“取 IP 失败告警”和 `OnStart` 基线时同一轮发两封 | 首轮分支增加 `alertSent` 互斥；告警正文使用本轮 IP，并静默提交基线 |
+| P2 | 清空日志按钮前端仍用 GET，后端 0.9 起只接受 POST，按钮静默失效 | 改为 `request.post("./clearLog", {})`；`request.get/post` 对非 2xx 抛错 |
+| P2 | IPv6 大小写/压缩形式不同被误判为变更 | 统一 `net.ParseIP(...).String()`，逗号列表去重排序；临时/弃用地址过滤后也保持规范形式 |
+| P2 | 恢复通知后 `lastIPv4/lastIPv6` 不回写，状态面板/后续告警显示旧 IP | 恢复成功时按地址族回写当前主地址；新增 `changeNotified`，告警不再冒充“已通知 IP”，恢复含变更时按变更通知处理 |
+| P2 | 空名配置按数组下标做源 key，删除/重排后复用旧基线，可能误发变更 | 唯一名称继续用名称；无名称/重名用“域名+提供方+取 IP 方式”的 hash，删除/重排稳定 |
+| P3 | 关闭“获取失败告警”后 `alerted` 残留，重开可能补发假恢复 | 关闭告警/邮件时同步清除落盘 `alerted` |
+| P3 | 异常远期 `nextRetryAt` 在 `/emailStatus` 未自愈，面板显示荒唐倒计时 | 状态接口按 `2*sendBackoffMax` 判定并返回 0 |
+| P3 | 非法域名被算作“取 IP 失败”，开启告警时 3 轮后误报 | `Domains.GetNewIp` 记录 `Ipv4Configured/Ipv6Configured`，`RunOnce` 用解析后的域名数判断期望 |
+| P3 | 多源/部分失败时域名、告警 IP、主地址、上次值不准确 | 只列变更源域名；告警用本轮 IP；主地址按地址族取第一个非空；`Prev*` 始终来自状态；首轮基线列出全部源 |
+| P3 | 自定义端口 + 空 `encrypt` 时 UI 默认选 SSL，保存静默改配置 | 增加“自动（按端口）”选项；未知端口回到自动 |
+| P3 | To/Subject 头不折叠，大收件人列表超过 RFC 998 | 头部按 76 字符折叠 |
+| P3 | 状态文件写盘未串行化，`sendMail` 与保存/测试可并发写同一个 `.tmp` | 内存态与文件写入放在同一把锁内；日志告警移到锁外 |
+| P3 | 历史面板把配置源名称拼进 `innerHTML`，存在存储型 XSS 面 | `source`/IP 转义，配置下拉用 `textContent` |
+| P3 | 状态文件损坏时每次读取都打日志，状态轮询刷屏 | 解析失败只告警一次，写盘成功后复位 |
+| P3 | 历史文件 >256 KB 时无条件跳过首行，可能少算一条 | 首行能解析为 JSON 则保留 |
+
+新增测试：`config/email_014_test.go`、`dns/email_014_test.go`、`web/email_014_test.go`，覆盖首轮告警单发、恢复回写、IPv6 规范化、远期退避、关闭告警、长头部、多源内容、并发状态写、空名/重名源 key、非法域名、清空日志前后端方法。
 
 ### 6.17.7-email-0.13
 

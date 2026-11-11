@@ -39,7 +39,7 @@ func HandleEmailStatus(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	conf, _ := config.GetConfigCached()
-	ipv4, ipv6, lastSent := config.GetEmailStateSnapshot()
+	ipv4, ipv6, lastSent, changeNotified := config.GetEmailStateSnapshotEx()
 	detectedIPv4, detectedIPv6 := dns.LastDetected()
 	summary := config.GetEmailHistorySummary(10)
 
@@ -52,7 +52,7 @@ func HandleEmailStatus(writer http.ResponseWriter, request *http.Request) {
 		HistoryTotal:    summary.Total,
 		Recent:          summary.Recent,
 		EmailEnabled:    conf.Email.Enable,
-		HasNotified:     lastSent > 0,
+		HasNotified:     changeNotified,
 		NextRunAt:       dns.NextRunAt(),
 		DetectedIPv4:    detectedIPv4,
 		DetectedIPv6:    detectedIPv6,

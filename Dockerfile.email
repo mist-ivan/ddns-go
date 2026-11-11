@@ -3,7 +3,7 @@
 #   REV=$(git rev-parse --short HEAD)
 #   docker build -f Dockerfile.email \
 #     --build-arg REVISION=$REV \
-#     -t ddns-go-email:6.17.7-email-0.13 .
+#     -t ddns-go-email:6.17.7-email-0.14 .
 FROM golang:1.25-alpine AS builder
 
 WORKDIR /src
@@ -14,15 +14,15 @@ RUN go mod download
 
 COPY . .
 
-ARG VERSION=6.17.7-email-0.13
+ARG VERSION=6.17.7-email-0.14
 RUN CGO_ENABLED=0 go build -trimpath \
-      -ldflags "-s -w -X main.version=${VERSION}" \
+      -ldflags "-s -w -buildid= -X main.version=${VERSION}" \
       -o /out/ddns-go .
 
 # Alpine 3.21 于 2026-11-01 EOL，这里改用当前受支持的版本
 FROM alpine:3.24
 
-ARG VERSION=6.17.7-email-0.13
+ARG VERSION=6.17.7-email-0.14
 ARG REVISION=unknown
 
 # 注意：故意不设置 org.opencontainers.image.source。
@@ -36,8 +36,9 @@ LABEL org.opencontainers.image.title="ddns-go-email" \
       org.opencontainers.image.base.name="docker.io/library/alpine:3.24" \
       org.opencontainers.image.licenses="MIT"
 
-# tzdata 提供时区，curl/grep 方便容器内排查
-RUN apk add --no-cache ca-certificates tzdata curl grep
+# 只保留运行时真正需要的 CA 根证书和时区数据。
+# 健康检查用 BusyBox 自带的 wget，不再安装 curl/grep，镜像更小。
+RUN apk add --no-cache ca-certificates tzdata
 
 WORKDIR /app
 COPY --from=builder /out/ddns-go /app/ddns-go
@@ -48,9 +49,9 @@ EXPOSE 9876
 # 配置文件默认位于 /root/.ddns_go_config.yaml，挂载 /root 即可持久化
 VOLUME ["/root"]
 
-# 容器内自带 curl：健康检查直接探登录页（该页免认证，返回 200 即可）
+# 登录页免认证，返回 200 即视为健康；BusyBox wget 已包含在 Alpine 基础镜像中。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -fsS -o /dev/null http://127.0.0.1:9876/login || exit 1
+    CMD wget -q -O /dev/null http://127.0.0.1:9876/login || exit 1
 
 ENTRYPOINT ["/app/ddns-go"]
 CMD ["-l", ":9876", "-f", "600"]

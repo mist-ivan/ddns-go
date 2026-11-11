@@ -1,6 +1,9 @@
 .git
 .gitignore
 *.md
+*_test.go
+.github
+.vscode
 ddns-go
 ddns-go-baseline
 ddns-go-email

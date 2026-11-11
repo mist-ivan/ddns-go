@@ -105,9 +105,12 @@ func readEmailHistoryLines(path string) []string {
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if first && skipFirstPartial {
-			// 从中间开始读，第一条大概率是被截断的半行
+			// 从中间开始读，第一条大概率是被截断的半行。
+			// 但如果 seek 恰好落在行首，它其实是完整 JSON，应保留。
 			first = false
-			continue
+			if !json.Valid([]byte(line)) {
+				continue
+			}
 		}
 		first = false
 		if line != "" {

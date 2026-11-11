@@ -35,6 +35,10 @@ const I18N_MAP = {
     'en': 'Auto',
     'zh-cn': '自动'
   },
+  'Auto (by port)': {
+    'en': 'Auto (by port)',
+    'zh-cn': '自动（按端口）'
+  },
   '1s': {
     'en': '1s',
     'zh-cn': '1秒'

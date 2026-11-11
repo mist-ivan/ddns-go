@@ -2,6 +2,7 @@ package dns
 
 import (
 	"fmt"
+	"hash/fnv"
 	"sort"
 	"strings"
 	"sync"
@@ -155,19 +156,19 @@ func RunOnce() {
 		ipv4ExpectedCount, ipv6ExpectedCount int
 		ipv4SuccessCount, ipv6SuccessCount   int
 		// sources 按配置源记录本轮地址，供邮件模块"按源比对"
-		sources    []config.SourceAddr
-		sourceSeen = map[string]int{}
+		sources []config.SourceAddr
 	)
 
+	// 重名配置需要内容 hash 才能区分；先统计全量名称，避免“第一个叫 A、
+	// 第二个也叫 A”时第二个的 key 依赖遍历顺序。
+	nameCount := make(map[string]int)
+	for _, dc := range conf.DnsConf {
+		if n := strings.TrimSpace(dc.Name); n != "" {
+			nameCount[n]++
+		}
+	}
+
 	for i, dc := range conf.DnsConf {
-		// 只有“启用且确实配置了域名”的地址族才算期望；
-		// 否则新增配置默认勾选 IPv6 但只填 IPv4 域名时，会误报 IPv6 获取失败。
-		if dc.Ipv4.Enable && hasDomains(dc.Ipv4.Domains) {
-			ipv4ExpectedCount++
-		}
-		if dc.Ipv6.Enable && hasDomains(dc.Ipv6.Domains) {
-			ipv6ExpectedCount++
-		}
 		var dnsSelected DNS
 		switch dc.DNS.Name {
 		case "alidns":
@@ -239,18 +240,28 @@ func RunOnce() {
 		if domains.Ipv6Addr != "" {
 			detectedIPv6 = append(detectedIPv6, domains.Ipv6Addr)
 		}
-		// 按配置粒度统计成功数：任一"期望"的配置没取到地址都要算失败，
-		// 否则多配置里坏掉一个永远不会触发告警。
-		if dc.Ipv4.Enable && hasDomains(dc.Ipv4.Domains) && domains.Ipv4Addr != "" {
-			ipv4SuccessCount++
+		// 按配置粒度统计期望/成功数：Expected 由 Domains.GetNewIp 根据
+		// 解析后的合法域名设置，不能再拿原始字符串判断，否则非法域名
+		// 会被误算成“取 IP 失败”。
+		if domains.Ipv4Configured {
+			ipv4ExpectedCount++
+			if domains.Ipv4Addr != "" {
+				ipv4SuccessCount++
+			}
 		}
-		if dc.Ipv6.Enable && hasDomains(dc.Ipv6.Domains) && domains.Ipv6Addr != "" {
-			ipv6SuccessCount++
+		if domains.Ipv6Configured {
+			ipv6ExpectedCount++
+			if domains.Ipv6Addr != "" {
+				ipv6SuccessCount++
+			}
 		}
+		key, label, sourceDomains := sourceIdentity(dc, i, nameCount)
 		sources = append(sources, config.SourceAddr{
-			Key:  sourceKey(dc.Name, i, sourceSeen),
-			IPv4: domains.Ipv4Addr,
-			IPv6: domains.Ipv6Addr,
+			Key:     key,
+			Label:   label,
+			Domains: sourceDomains,
+			IPv4:    domains.Ipv4Addr,
+			IPv6:    domains.Ipv6Addr,
 		})
 		// webhook
 		v4Status, v6Status := config.ExecWebhook(&domains, &conf)
@@ -283,29 +294,76 @@ func RunOnce() {
 	})
 }
 
-// hasDomains 判断域名列表里是否有非空项
-func hasDomains(domains []string) bool {
-	for _, d := range domains {
-		if strings.TrimSpace(d) != "" {
-			return true
+// sourceDomains 返回配置里全部非空域名（去重、排序）。
+func sourceDomains(dc config.DnsConfig) []string {
+	seen := make(map[string]bool)
+	var domains []string
+	for _, list := range [][]string{dc.Ipv4.Domains, dc.Ipv6.Domains} {
+		for _, d := range list {
+			d = strings.TrimSpace(d)
+			if d == "" || seen[d] {
+				continue
+			}
+			seen[d] = true
+			domains = append(domains, d)
 		}
 	}
-	return false
+	sort.Strings(domains)
+	return domains
 }
 
-// sourceKey 生成配置源的稳定标识：优先用配置名，重名/无名时退回索引。
-// 改名或调换顺序会被当成"新源"，只会静默记录基线，不会发错邮件。
-func sourceKey(name string, index int, seen map[string]int) string {
-	key := strings.TrimSpace(name)
-	if key == "" {
-		key = fmt.Sprintf("#%d", index)
+// sourceIdentity 生成跨轮次稳定的配置源标识。
+//
+// 旧实现无名称时直接用 "#索引"：删除/调换前面的配置会让后面的配置复用
+// 旧索引，从而拿已删除配置的基线比较，误发 IP 变更邮件。
+// 现在：
+//   - 唯一名称仍用名称（兼容已有状态文件）；
+//   - 无名称/重名时用 "域名/提供方/取 IP 方式" 的 hash，删除/重排不会变；
+//   - label 只用于邮件展示，不参与状态键。
+func sourceIdentity(dc config.DnsConfig, index int, nameCount map[string]int) (key, label string, domains []string) {
+	domains = sourceDomains(dc)
+	name := strings.TrimSpace(dc.Name)
+
+	if name != "" {
+		label = name
+		if nameCount[name] <= 1 {
+			return name, label, domains
+		}
+	} else if len(domains) > 0 {
+		label = domains[0]
+	} else {
+		label = fmt.Sprintf("#%d", index+1)
 	}
-	if seen[key] > 0 {
-		seen[key]++
-		return fmt.Sprintf("%s#%d", key, index)
+
+	h := fnv.New64a()
+	writeHashPart := func(s string) {
+		_, _ = h.Write([]byte(s))
+		_, _ = h.Write([]byte{0})
 	}
-	seen[key] = 1
-	return key
+	writeHashPart(dc.DNS.Name)
+	writeHashPart(dc.Ipv4.GetType)
+	writeHashPart(dc.Ipv4.URL)
+	writeHashPart(dc.Ipv4.NetInterface)
+	writeHashPart(dc.Ipv4.Cmd)
+	writeHashPart(dc.Ipv6.GetType)
+	writeHashPart(dc.Ipv6.URL)
+	writeHashPart(dc.Ipv6.NetInterface)
+	writeHashPart(dc.Ipv6.Cmd)
+	writeHashPart(dc.HttpInterface)
+	for _, d := range domains {
+		writeHashPart(d)
+	}
+	suffix := fmt.Sprintf("%x", h.Sum64())
+	key = label + "#" + suffix
+	if name != "" && nameCount[name] > 1 {
+		// 重名配置在邮件里也要能区分，显示短 hash。
+		short := suffix
+		if len(short) > 6 {
+			short = short[:6]
+		}
+		label = fmt.Sprintf("%s (%s)", name, short)
+	}
+	return key, label, domains
 }
 
 // uniqueAddr 去重并拼接地址，正常情况下只会有一个公网 IP

@@ -172,6 +172,7 @@ func resetEmailStateForTest() {
 	defer emailStateLock.Unlock()
 	emailStateMem = nil
 	emailStateWarn = false
+	emailStateParseWarn = false
 	lastIgnoredIPv6 = ""
 }
 

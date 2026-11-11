@@ -98,6 +98,9 @@ const request = {
     if (response.redirected) {
       window.location.href = response.url
     }
+    if (!response.ok) {
+      throw new Error(await response.text())
+    }
     return await (parseFunc||this.parse)(response)
   },
   post: async function(path, data, parseFunc) {
@@ -110,6 +113,9 @@ const request = {
     })
     if (response.redirected) {
       window.location.href = response.url
+    }
+    if (!response.ok) {
+      throw new Error(await response.text())
     }
     return await (parseFunc||this.parse)(response)
   }
