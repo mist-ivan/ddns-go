@@ -3,8 +3,8 @@
 基于 [jeessy2/ddns-go](https://github.com/jeessy2/ddns-go) **v6.17.7**（commit `7aad574`）的定制分支，
 新增「公网 IP 变更时发送邮件提醒」功能。其余行为与原版一致。
 
-- 源码：`/home/mist/work/ddns-go`（分支 `v0.14`，以仓库当前 HEAD 为准）
-- 镜像：`ddns-go-email:6.17.7-email-0.14`（多阶段构建，已移除 curl/grep）
+- 源码：`/home/mist/work/ddns-go`（分支 `v0.15`，以仓库当前 HEAD 为准）
+- 镜像：`ddns-go-email:6.17.7-email-0.15`（多阶段构建，已移除 curl/grep）
 - 测试：`/home/mist/emailtest`（假 SMTP + 假回调，可随时重跑）
 
 > **不要使用 `-u` 参数。** 它会从上游 GitHub releases 下载官方二进制覆盖自身，
@@ -68,7 +68,7 @@ fork 版把默认检测间隔从 300 秒改为 **600 秒（10 分钟）**：
 ```bash
 docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.14 -l :9876 -f 120
+  ddns-go-email:6.17.7-email-0.15 -l :9876 -f 120
 ```
 
 ## 配置字段
@@ -116,8 +116,8 @@ cd /home/mist/work/ddns-go
 REV=$(git rev-parse --short HEAD)
 sudo docker build -f Dockerfile.email \
   --build-arg REVISION=$REV \
-  -t ddns-go-email:6.17.7-email-0.14 \
-  -t ivanzzffii/ddns-go-email:6.17.7-email-0.14 .
+  -t ddns-go-email:6.17.7-email-0.15 \
+  -t ivanzzffii/ddns-go-email:6.17.7-email-0.15 .
 ```
 
 ## 运行
@@ -126,7 +126,7 @@ sudo docker build -f Dockerfile.email \
 sudo docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 \
   -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.14
+  ddns-go-email:6.17.7-email-0.15
 ```
 
 打开 `http://<主机IP>:9876`，配置 DNS 与邮件通知后保存即可。
@@ -151,6 +151,24 @@ python3 /home/mist/work/test/verify_mail.py
 
 ## 更新记录
 
+### 6.17.7-email-0.15
+
+按 0.14 的独立复核修复两处缺陷。
+
+| 级别 | 问题 | 修复 |
+|---|---|---|
+| P2 | 升级首轮误发“IP 变更”：状态文件里的旧 IPv6 基线可能是大写/未压缩形式，而当前值已规范化，直接比较会误判 | `loadEmailState` 在读取时规范化 `LastIPv4/6` 和 `Sources` 全部值；`NotifyIPChangeEmail` 比较前再规范化 `PrevIPv4/PrevIPv6` |
+| P3 | `ResetEmailBackoff` / `markNotifiedNow` / `setAlertedState` 是跨两次锁的 read-modify-write，并发时后写者会用旧快照覆盖先写者；`sendMail` 发送 45 秒后写回发送前快照也会回滚并发更新 | 新增 `updateEmailState`，在锁内完成读改写；上述函数和 `commitEmailState`、`sendMail` 的失败/成功分支全部改用原子更新 |
+| P3 | `storeEmailState` 虽已把文件写入放进锁，但只是单次写串行化，不解决多字段更新丢失 | 状态持久化统一走锁内 `persistEmailStateLocked`；新增并发更新/丢失更新测试 |
+
+**说明**：`storeEmailState` 仍是“整体替换”语义，只用于测试或完整状态写入；业务路径的增量更新必须走 `updateEmailState`。
+
+**文档修正**：Subject 的 76 字符折叠对非 ASCII 主题不适用——单个 RFC 2047 encoded-word 不能拆，`Subject: ` 前缀 + 73 字节 word 会到 82 字节；硬上限仍是 RFC 5322 的 998，编码词上限 75。README/测试按这个口径描述。
+
+**已知取舍**：无名称/重名源的 key hash 包含域名、提供方和取 IP 方式（URL/命令/网卡）；修改域名或调换多 URL 顺序会重建基线，可能漏一轮通知。旧状态文件中的旧 `Sources` 键不会清理，无名/重名配置升级后首轮会静默重建基线；如果恰好那轮 IP 变化，会漏一封。`ChangeNotified` 对旧状态的迁移判据较宽，可能把旧的“只告警”显示成“上次变更通知”，仅是显示问题。
+
+新增测试：`config/email_015_test.go`（旧格式基线、原子更新、并发更新、Subject encoded-word 上限）。
+
 ### 6.17.7-email-0.14
 
 按 0.13 的审查报告修复 P2/P3，并优化镜像体积。镜像从 Alpine 运行时中移除 `curl`/`grep`，健康检查改用 BusyBox `wget`；构建加 `-buildid=`，便于复现。
@@ -167,7 +185,7 @@ python3 /home/mist/work/test/verify_mail.py
 | P3 | 非法域名被算作“取 IP 失败”，开启告警时 3 轮后误报 | `Domains.GetNewIp` 记录 `Ipv4Configured/Ipv6Configured`，`RunOnce` 用解析后的域名数判断期望 |
 | P3 | 多源/部分失败时域名、告警 IP、主地址、上次值不准确 | 只列变更源域名；告警用本轮 IP；主地址按地址族取第一个非空；`Prev*` 始终来自状态；首轮基线列出全部源 |
 | P3 | 自定义端口 + 空 `encrypt` 时 UI 默认选 SSL，保存静默改配置 | 增加“自动（按端口）”选项；未知端口回到自动 |
-| P3 | To/Subject 头不折叠，大收件人列表超过 RFC 998 | 头部按 76 字符折叠 |
+| P3 | To/Subject 头不折叠，大收件人列表超过 RFC 998 | 头部尽量按 76 字符折叠；Subject 的 encoded-word 不能拆，仍保证 RFC 2047 单 word ≤75、整行 ≤998 |
 | P3 | 状态文件写盘未串行化，`sendMail` 与保存/测试可并发写同一个 `.tmp` | 内存态与文件写入放在同一把锁内；日志告警移到锁外 |
 | P3 | 历史面板把配置源名称拼进 `innerHTML`，存在存储型 XSS 面 | `source`/IP 转义，配置下拉用 `textContent` |
 | P3 | 状态文件损坏时每次读取都打日志，状态轮询刷屏 | 解析失败只告警一次，写盘成功后复位 |

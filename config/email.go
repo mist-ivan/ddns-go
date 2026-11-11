@@ -548,14 +548,19 @@ func (conf *Config) sendMail(subject, body string) error {
 	// 长期运行下等于邮件通知永久失效。超过退避上限两倍即判定无效并当场自愈。
 	if state.NextRetryAt > 0 && state.NextRetryAt-now > int64((2*sendBackoffMax)/time.Second) {
 		util.Log("邮件通知: 状态文件中的 nextRetryAt 异常（%d），已忽略并重置", state.NextRetryAt)
+		updateEmailState(func(cur *emailState) {
+			cur.NextRetryAt = 0
+			cur.FailCount = 0
+		})
 		state.NextRetryAt = 0
 		state.FailCount = 0
-		storeEmailState(state)
 	}
 	// FailCount 同理：负数或离谱的大值会让退避档位永远停在最高一级
 	if state.FailCount < 0 || state.FailCount > 1000 {
+		updateEmailState(func(cur *emailState) {
+			cur.FailCount = 0
+		})
 		state.FailCount = 0
-		storeEmailState(state)
 	}
 
 	if state.NextRetryAt > 0 && now < state.NextRetryAt {
@@ -568,21 +573,24 @@ func (conf *Config) sendMail(subject, body string) error {
 	}
 
 	if err := conf.Email.Send(subject, body); err != nil {
-		state.FailCount++
-		backoff := sendBackoffInitial
-		if state.FailCount >= 3 {
-			backoff = sendBackoffMax
-		}
-		state.NextRetryAt = time.Now().Add(backoff).Unix()
-		storeEmailState(state)
+		// 发送可能持续 45 秒，期间状态可能被 markNotifiedNow/ResetEmailBackoff
+		// 更新。失败计数必须基于“当前状态”原子累加，不能写回发送前的快照。
+		updateEmailState(func(cur *emailState) {
+			cur.FailCount++
+			backoff := sendBackoffInitial
+			if cur.FailCount >= 3 {
+				backoff = sendBackoffMax
+			}
+			cur.NextRetryAt = time.Now().Add(backoff).Unix()
+		})
 		return err
 	}
 
-	if state.FailCount != 0 || state.NextRetryAt != 0 {
-		state.FailCount = 0
-		state.NextRetryAt = 0
-		storeEmailState(state)
-	}
+	// 成功后在锁内清零，避免用发送前的旧快照覆盖并发写入的 LastSent/Alerted。
+	updateEmailState(func(cur *emailState) {
+		cur.FailCount = 0
+		cur.NextRetryAt = 0
+	})
 	return nil
 }
 
@@ -592,14 +600,18 @@ func (conf *Config) sendMail(subject, body string) error {
 // 真实通知会被静默跳过，用户会以为功能坏了——而测试发信却能成功，更容易误判。
 func ResetEmailBackoff() {
 	lastBackoffNotice.Store(0)
-	state := loadEmailState()
-	if state.FailCount == 0 && state.NextRetryAt == 0 {
-		return
+	changed := false
+	updateEmailState(func(state *emailState) {
+		if state.FailCount == 0 && state.NextRetryAt == 0 {
+			return
+		}
+		state.FailCount = 0
+		state.NextRetryAt = 0
+		changed = true
+	})
+	if changed {
+		util.Log("邮件通知: 发送退避已解除, 下一轮将立即尝试发送")
 	}
-	state.FailCount = 0
-	state.NextRetryAt = 0
-	storeEmailState(state)
-	util.Log("邮件通知: 发送退避已解除, 下一轮将立即尝试发送")
 }
 
 // GetEmailBackoffUntil 返回退避截止时间（unix 秒），0 表示当前不在退避期
@@ -682,8 +694,8 @@ func NotifyIPChangeEmail(conf *Config, sources []SourceAddr, fetchStatus FetchSt
 			Key:      src.Key,
 			Label:    src.Label,
 			Domains:  src.Domains,
-			PrevIPv4: state.Sources[sourceStateKey(src.Key, "v4")],
-			PrevIPv6: state.Sources[sourceStateKey(src.Key, "v6")],
+			PrevIPv4: normalizeIPValue(state.Sources[sourceStateKey(src.Key, "v4")]),
+			PrevIPv6: normalizeIPValue(state.Sources[sourceStateKey(src.Key, "v6")]),
 			IPv4:     src.IPv4,
 			IPv6:     src.IPv6,
 		}
@@ -863,20 +875,18 @@ var (
 
 // setAlertedState 把"当前故障是否已告警"写进状态文件，重启后恢复通知才不会丢
 func setAlertedState(alerted bool) {
-	state := loadEmailState()
-	if state.Alerted == alerted {
-		return
-	}
-	state.Alerted = alerted
-	storeEmailState(state)
+	updateEmailState(func(state *emailState) {
+		state.Alerted = alerted
+	})
 }
 
 // markNotifiedNow 记录"刚刚发过通知"的时间戳，但不改动 IP 基线。
 // 告警/恢复这类通知也要反映到状态面板的"上次通知"上。
 func markNotifiedNow() {
-	state := loadEmailState()
-	state.LastSent = time.Now().Unix()
-	storeEmailState(state)
+	now := time.Now().Unix()
+	updateEmailState(func(state *emailState) {
+		state.LastSent = now
+	})
 }
 
 // handleFetchHealth 处理"取不到公网 IP"的告警与恢复通知。
@@ -1373,13 +1383,28 @@ var (
 	lastIgnoredIPv6     string
 )
 
-// loadEmailState 优先返回内存态，其次读文件
-func loadEmailState() emailState {
-	emailStateLock.Lock()
-	defer emailStateLock.Unlock()
+// normalizeEmailState 统一状态文件里的 IP 文本形式。
+// 0.13/0.14 的状态文件可能保存了非规范的 IPv6（大写、未压缩），
+// 比较前必须把基线和当前值都规范化，否则升级后的首轮会误发变更邮件。
+func normalizeEmailState(state *emailState) {
+	state.LastIPv4 = normalizeIPValue(state.LastIPv4)
+	state.LastIPv6 = normalizeIPValue(state.LastIPv6)
+	if state.Sources == nil {
+		return
+	}
+	sources := make(map[string]string, len(state.Sources))
+	for k, v := range state.Sources {
+		sources[k] = normalizeIPValue(v)
+	}
+	state.Sources = sources
+}
 
+// loadEmailStateLocked 调用方必须持有 emailStateLock。
+func loadEmailStateLocked() emailState {
 	if emailStateMem != nil {
-		return *emailStateMem
+		state := *emailStateMem
+		normalizeEmailState(&state)
+		return state
 	}
 
 	byt, err := os.ReadFile(emailStatePath())
@@ -1403,25 +1428,56 @@ func loadEmailState() emailState {
 		}
 		state.Schema = emailStateSchema
 	}
+	normalizeEmailState(&state)
 	return state
 }
 
-// storeEmailState 更新内存态并原子落盘。
-// 落盘失败只告警一次：内存态已经记住了本次的 IP，下一轮不会重复发同一封邮件。
-func storeEmailState(state emailState) {
-	state.Schema = emailStateSchema
-
+// loadEmailState 优先返回内存态，其次读文件
+func loadEmailState() emailState {
 	emailStateLock.Lock()
+	defer emailStateLock.Unlock()
+	return loadEmailStateLocked()
+}
+
+// persistEmailStateLocked 更新内存态并落盘；调用方必须持有 emailStateLock。
+func persistEmailStateLocked(state emailState) (shouldWarn bool, err error) {
 	emailStateMem = &state
-	err := writeEmailStateFile(state)
-	shouldWarn := false
+	err = writeEmailStateFile(state)
 	if err != nil {
 		shouldWarn = !emailStateWarn
 		emailStateWarn = true
-	} else {
-		emailStateWarn = false
-		emailStateParseWarn = false
+		return
 	}
+	emailStateWarn = false
+	emailStateParseWarn = false
+	return
+}
+
+// storeEmailState 用给定状态整体替换内存态与文件。
+// 落盘失败只告警一次：内存态已经记住了本次的 IP，下一轮不会重复发同一封邮件。
+func storeEmailState(state emailState) {
+	normalizeEmailState(&state)
+	state.Schema = emailStateSchema
+
+	emailStateLock.Lock()
+	shouldWarn, err := persistEmailStateLocked(state)
+	emailStateLock.Unlock()
+
+	if shouldWarn {
+		util.Log("邮件通知: 状态写入失败 (%s), 已改用内存状态, 本次运行内不会重复提醒", err)
+	}
+}
+
+// updateEmailState 在锁内完成“读当前状态 → 修改 → 写回”，
+// 避免 ResetEmailBackoff / markNotifiedNow / setAlertedState 等函数
+// 各自 load→store，互相用旧快照覆盖对方的字段。
+func updateEmailState(fn func(*emailState)) {
+	emailStateLock.Lock()
+	state := loadEmailStateLocked()
+	fn(&state)
+	normalizeEmailState(&state)
+	state.Schema = emailStateSchema
+	shouldWarn, err := persistEmailStateLocked(state)
 	emailStateLock.Unlock()
 
 	if shouldWarn {
@@ -1437,17 +1493,17 @@ func storeEmailState(state emailState) {
 // 症状是：发信成功后 failCount 不清零（退避等级被永久抬高）、告警后 alerted
 // 被写回 false（重启后同一故障重复告警，且恢复通知发不出去）。
 func commitEmailState(next emailState) {
-	cur := loadEmailState()
-	cur.Sources = next.Sources
-	cur.LastIPv4 = next.LastIPv4
-	cur.LastIPv6 = next.LastIPv6
-	if next.LastSent != 0 {
-		cur.LastSent = next.LastSent
-	}
-	if next.ChangeNotified {
-		cur.ChangeNotified = true
-	}
-	storeEmailState(cur)
+	updateEmailState(func(cur *emailState) {
+		cur.Sources = next.Sources
+		cur.LastIPv4 = next.LastIPv4
+		cur.LastIPv6 = next.LastIPv6
+		if next.LastSent != 0 {
+			cur.LastSent = next.LastSent
+		}
+		if next.ChangeNotified {
+			cur.ChangeNotified = true
+		}
+	})
 }
 
 // writeEmailStateFile 先写临时文件再 rename，避免进程中途被杀留下半个 JSON。

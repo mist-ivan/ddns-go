@@ -3,9 +3,9 @@
 # Build on an amd64 host without QEMU:
 #   docker buildx build --platform linux/arm/v7 \
 #     -f Dockerfile.email.arm \
-#     --build-arg VERSION=6.17.7-email-ARM0.14 \
+#     --build-arg VERSION=6.17.7-email-ARM0.15 \
 #     --build-arg REVISION=$(git rev-parse --short HEAD) \
-#     -t ddns-go-email:6.17.7-email-ARM0.14 --load .
+#     -t ddns-go-email:6.17.7-email-ARM0.15 --load .
 #
 # The Go binary is cross-compiled on BUILDPLATFORM and the final image is
 # assembles from scratch. No ARM executable is run during the build, so no
@@ -22,7 +22,7 @@ RUN go mod download
 
 COPY . .
 
-ARG VERSION=6.17.7-email-ARM0.14
+ARG VERSION=6.17.7-email-ARM0.15
 ARG TARGETOS
 ARG TARGETARCH
 ARG TARGETVARIANT
@@ -39,7 +39,7 @@ RUN apk add --no-cache ca-certificates tzdata
 
 FROM scratch
 
-ARG VERSION=6.17.7-email-ARM0.14
+ARG VERSION=6.17.7-email-ARM0.15
 ARG REVISION=unknown
 
 LABEL org.opencontainers.image.title="ddns-go-email" \
