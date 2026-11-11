@@ -519,11 +519,12 @@ func NotifyIPChangeEmail(conf *Config, sources []SourceAddr, fetchStatus FetchSt
 	var changes []sourceChange
 	for _, src := range normalized {
 		change := sourceChange{Key: src.Key}
+		changed := false
 		if src.IPv4 != "" {
 			change.PrevIPv4 = state.Sources[sourceStateKey(src.Key, "v4")]
 			change.IPv4 = src.IPv4
 			if change.PrevIPv4 != "" && change.PrevIPv4 != src.IPv4 {
-				changes = append(changes, change)
+				changed = true
 			}
 			next.Sources[sourceStateKey(src.Key, "v4")] = src.IPv4
 		}
@@ -531,9 +532,16 @@ func NotifyIPChangeEmail(conf *Config, sources []SourceAddr, fetchStatus FetchSt
 			change.PrevIPv6 = state.Sources[sourceStateKey(src.Key, "v6")]
 			change.IPv6 = src.IPv6
 			if change.PrevIPv6 != "" && change.PrevIPv6 != src.IPv6 {
-				changes = append(changes, change)
+				changed = true
 			}
 			next.Sources[sourceStateKey(src.Key, "v6")] = src.IPv6
+		}
+		// 每个源只产出一条变更记录，且必须等 IPv4/IPv6 都填好之后再追加。
+		// 旧实现按地址族各追加一次：IPv4 那一条的 IPv6 字段还是空的，
+		// 被 changes[0] 取走后就变成"邮件里 IPv6 恒为 -"；双栈同轮变更时
+		// IPv6 的变更还会被整条丢掉（基线却已经推进，事件永久丢失）。
+		if changed {
+			changes = append(changes, change)
 		}
 	}
 
@@ -548,27 +556,29 @@ func NotifyIPChangeEmail(conf *Config, sources []SourceAddr, fetchStatus FetchSt
 	if firstRun {
 		next.LastIPv4, next.LastIPv6 = primaryIPv4, primaryIPv6
 		if !conf.Email.OnStart {
-			storeEmailState(next)
+			commitEmailState(next)
 			util.Log("邮件通知: 已记录初始 IP 基线 (%s / %s)，本次不发送", displayOrDash(primaryIPv4), displayOrDash(primaryIPv6))
 			return
 		}
 		if recoveredSent {
 			// 恢复通知里已经带了当前 IP，不再重复发基线邮件
 			next.LastSent = time.Now().Unix()
-			storeEmailState(next)
+			commitEmailState(next)
 			return
 		}
 	} else {
 		if len(changes) == 0 {
 			// 新出现的源静默记录基线；已有源没变化则什么都不做
 			if len(next.Sources) != len(state.Sources) {
-				storeEmailState(next)
+				commitEmailState(next)
 			}
 			return
 		}
-		// 本轮已经发过告警/恢复邮件时，不再追发变更邮件（每轮最多一封）
+		// 本轮已经发过告警/恢复邮件时，不再追发变更邮件（每轮最多一封）。
+		// 但绝不能在这里推进基线：那样这次变更会被永久丢弃，之后再也检测不到。
+		// 直接返回、不写状态，下一轮会重新检测到同一个变更并补发。
 		if alertSent || recoveredSent {
-			storeEmailState(next)
+			util.Log("邮件通知: 本轮已发送告警/恢复邮件, IP 变更通知顺延到下一轮")
 			return
 		}
 	}
@@ -598,7 +608,7 @@ func NotifyIPChangeEmail(conf *Config, sources []SourceAddr, fetchStatus FetchSt
 		next.LastIPv6 = primaryIPv6
 	}
 	next.LastSent = time.Now().Unix()
-	storeEmailState(next)
+	commitEmailState(next)
 
 	kind := historyKindChange
 	if firstRun {
@@ -674,6 +684,10 @@ func handleFetchHealth(conf *Config, status FetchStatus, ipv4, ipv6 string) (ale
 	if !conf.Email.AlertOnFetchFailure {
 		fetchTrackLock.Lock()
 		fetchTracker = fetchFailureTracker{}
+		// 同时要求下次启用时重新从状态文件恢复 alerted：
+		// 只清内存而不清 fetchTrackerLoaded 的话，关掉再打开会用一个空的
+		// tracker 去干活，磁盘上"本次故障已告警"的记录被忽略，导致重复告警。
+		fetchTrackerLoaded = false
 		fetchTrackLock.Unlock()
 		return false, false
 	}
@@ -1042,6 +1056,24 @@ func storeEmailState(state emailState) {
 	emailStateLock.Lock()
 	emailStateWarn = false
 	emailStateLock.Unlock()
+}
+
+// commitEmailState 以"当前状态"为基座合并写入，而不是用发信前的快照整体覆盖。
+//
+// 本轮更早的时候已经落过盘的内容不在 next 里：sendMail 成功时会清零
+// FailCount/NextRetryAt，markNotifiedNow/setAlertedState 会写入 LastSent/Alerted。
+// 旧实现直接 storeEmailState(next)，等于把这些刚写入的值回滚成发信前的旧值，
+// 症状是：发信成功后 failCount 不清零（退避等级被永久抬高）、告警后 alerted
+// 被写回 false（重启后同一故障重复告警，且恢复通知发不出去）。
+func commitEmailState(next emailState) {
+	cur := loadEmailState()
+	cur.Sources = next.Sources
+	cur.LastIPv4 = next.LastIPv4
+	cur.LastIPv6 = next.LastIPv6
+	if next.LastSent != 0 {
+		cur.LastSent = next.LastSent
+	}
+	storeEmailState(cur)
 }
 
 // writeEmailStateFile 先写临时文件再 rename，避免进程中途被杀留下半个 JSON

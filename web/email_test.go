@@ -7,8 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeessy2/ddns-go/v6/config"
+	"github.com/jeessy2/ddns-go/v6/dns"
 	"github.com/jeessy2/ddns-go/v6/util"
 )
 
@@ -241,7 +243,6 @@ lang: zh
 	}
 }
 
-
 // 同时提交“清除密码”与新密码时，新密码必须生效（v0.7 修复）
 func TestSaveNewPasswordWinsOverClear(t *testing.T) {
 	dir := t.TempDir()
@@ -292,6 +293,10 @@ lang: zh
 
 // 保存失败时不应该触发 DNS 检测/邮件检查（v0.7 修复）
 func TestSaveFailureSkipsRunOnce(t *testing.T) {
+	// 先等上一个用例遗留的异步检测跑完：它的 RunOnce 会读配置，
+	// 而本用例马上把配置路径改成不存在的目录，读失败会把该标志回写成 true。
+	dns.WaitPendingRun(5 * time.Second)
+
 	// 指向不存在的目录，SaveConfig 必然失败
 	t.Setenv(util.ConfigFilePathENV, filepath.Join(t.TempDir(), "missing-dir", "config.yaml"))
 	config.ResetConfigCache()

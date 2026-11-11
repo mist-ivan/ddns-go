@@ -22,16 +22,14 @@ func EmailTest(writer http.ResponseWriter, request *http.Request) {
 		To       string `json:"To"`
 		Encrypt  string `json:"Encrypt"`
 	}
+	if request.Method != http.MethodPost {
+		writer.Header().Set("Allow", http.MethodPost)
+		http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	if err := json.NewDecoder(request.Body).Decode(&data); err != nil {
 		util.Log("数据解析失败, 请刷新页面重试")
 		emailTestResult(writer, false, util.LogStr("数据解析失败, 请刷新页面重试"))
-		return
-	}
-
-	// 简单限频：这个接口会真的发信、占用一个最长 45 秒的连接，
-	// 不限制的话一次会话被盗就能把邮箱配额打光或触发风控。
-	if !acquireEmailTestSlot() {
-		emailTestResult(writer, false, util.LogStr("操作过于频繁，请稍后再试"))
 		return
 	}
 
@@ -74,6 +72,14 @@ func EmailTest(writer http.ResponseWriter, request *http.Request) {
 	if err := email.Validate(); err != nil {
 		util.Log("邮件测试失败: %s", err)
 		emailTestResult(writer, false, err.Error())
+		return
+	}
+
+	// 简单限频：这个接口会真的发信、占用一个最长 45 秒的连接，
+	// 不限制的话一次会话被盗就能把邮箱配额打光或触发风控。
+	// 名额必须在参数校验通过之后再占用，否则填错端口也要等 5 秒才能重试。
+	if !acquireEmailTestSlot() {
+		emailTestResult(writer, false, util.LogStr("操作过于频繁，请稍后再试"))
 		return
 	}
 

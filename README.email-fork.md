@@ -4,7 +4,7 @@
 新增「公网 IP 变更时发送邮件提醒」功能。其余行为与原版一致。
 
 - 源码：`/home/mist/work/ddns-go`（分支 `main`，以仓库当前 HEAD 为准）
-- 镜像：`ddns-go-email:6.17.7-email-0.10`（约 40 MB，多阶段构建）
+- 镜像：`ddns-go-email:6.17.7-email-0.11`（约 40 MB，多阶段构建）
 - 测试：`/home/mist/work/test`（假 SMTP + 假回调，可随时重跑）
 
 > **不要使用 `-u` 参数。** 它会从上游 GitHub releases 下载官方二进制覆盖自身，
@@ -68,7 +68,7 @@ fork 版把默认检测间隔从 300 秒改为 **600 秒（10 分钟）**：
 ```bash
 docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.10 -l :9876 -f 120
+  ddns-go-email:6.17.7-email-0.11 -l :9876 -f 120
 ```
 
 ## 配置字段
@@ -113,7 +113,7 @@ cd ddns-go && git log --oneline -1        # 应看到对应的版本提交
 
 ```bash
 cd /home/mist/work/ddns-go
-sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.10 .
+sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.11 .
 ```
 
 ## 运行
@@ -122,7 +122,7 @@ sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.10 .
 sudo docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 \
   -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.10
+  ddns-go-email:6.17.7-email-0.11
 ```
 
 打开 `http://<主机IP>:9876`，配置 DNS 与邮件通知后保存即可。
@@ -146,6 +146,28 @@ python3 /home/mist/work/test/verify_mail.py
 - IP 未变 → 不重复发送
 
 ## 更新记录
+
+### 6.17.7-email-0.11
+
+独立复检（加对照组 + 源码插桩，在一次性容器里跑）后修复的三类缺陷。**0.10 的镜像保留**，可随时回退对比。
+
+| 级别 | 问题 | 修复 |
+|---|---|---|
+| P2 | 变更快照**按地址族各追加一次**：IPv4 那一条的 IPv6 字段还是空的，被 `changes[0]` 取走后，**只要 IPv4 变更，邮件里的 IPv6 恒显示 `-`**；双栈同轮变更时，IPv6 的变更被整条丢弃，而基线已经推进，事件永久丢失 | 每个源只构造**一条** `sourceChange`，等 IPv4/IPv6 都填好后再判断是否变更、只追加一次 |
+| P2 | 发信成功后 `storeEmailState(next)` 写回的是**发信前**的旧快照，回滚了本轮更早落盘的 `failCount` / `nextRetryAt` / `alerted` / `lastSent` | 新增 `commitEmailState()`：以**当前状态**为基座，只覆盖调用方拥有的 `sources` / `lastIPv4` / `lastIPv6` / `lastSent` |
+| P2 | 同上根因：发信成功后 `failCount` 不清零，累计失败 3 次后**退避等级被永久抬到 60 分钟**，文档承诺的"初始 10 分钟"再也不生效 | 同上 |
+| P2 | 同上根因：告警同轮时落盘 `alerted=false`，容器在故障期间重启后会**重复告警**，且**恢复通知永远发不出去** | 同上 |
+| P2 | 告警同轮压制变更邮件时**顺手推进了基线**，这次变更之后再也不会被检测到（与"每轮最多一封"的本意不符） | 改为**顺延**：不写状态直接返回，下一轮重新检测到同一变更再补发；仍保证每轮最多一封 |
+| P3 | 关闭"获取失败告警"时只清了内存 tracker，未重置 `fetchTrackerLoaded`，关掉再打开会用空 tracker 覆盖磁盘上"已告警"的记录 | 关闭时一并把 `fetchTrackerLoaded` 置 false，下次启用重新从状态文件恢复 |
+| P3 | `/emailTest` 的 5 秒限频名额在**参数校验之前**消耗，端口填错也要等 5 秒才能重试 | 名额改到校验通过、真正发信之前才占用 |
+| P3 | `/emailTest`、`/emailStatus` 未校验 HTTP 方法 | 分别限定 POST / GET，非匹配方法返回 405 |
+| P3 | `readEmailHistoryLines` 里 `var reader io.Reader = f` + `_ = reader` 是重构残留 | 删除死代码（尾部跳读逻辑保持不变） |
+
+行为变化（升级时注意）：告警/恢复同轮发生的 IP 变更，过去是"静默推进基线、事件丢弃"，现在是"顺延到下一轮补发"。
+
+新增测试（`config/email_regression_test.go`）：`TestEmailDualFamilyChangeReportsBoth`、`TestEmailIPv4ChangeKeepsIPv6InMail`、`TestEmailAlertAndChangePersistState`、`TestEmailChangeDeferredNotDropped`、`TestEmailRecoveryNoticeSurvivesRestart`、`TestEmailNoDuplicateAlertAfterRestart`、`TestEmailFailCountResetsAfterSuccess`。
+
+已知未处理：状态文件里已消失配置源的键不会主动清理（改配置名后旧键会残留，重新加回同名配置时可能拿过期基线比对，最多多发一封变更邮件）；SMTP 密码仍以明文存于配置文件（权限 0600，协议所限）。
 
 ### 6.17.7-email-0.10
 

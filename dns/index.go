@@ -109,6 +109,18 @@ func RunOnceAsync() {
 	}()
 }
 
+// WaitPendingRun 等待已排队的异步检测结束。
+//
+// 仅用于测试：RunOnceAsync 起的 goroutine 会跨测试用例存活，若紧接着的用例
+// 改了配置路径，那个 goroutine 里 RunOnce 读配置失败会回写 ForceCompareGlobal，
+// 污染下一个用例的断言（实测 HEAD 上 8 次全量测试偶发失败 2 次）。
+func WaitPendingRun(timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for pendingRun.Load() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // RunOnce RunOnce
 func RunOnce() {
 	runOnceMu.Lock()

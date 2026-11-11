@@ -89,17 +89,15 @@ func readEmailHistoryLines(path string) []string {
 	}
 	defer f.Close()
 
-	var reader io.Reader = f
 	skipFirstPartial := false
 	if info, err := f.Stat(); err == nil && info.Size() > emailHistoryFullReadLimit {
 		if _, err := f.Seek(info.Size()-emailHistoryTailBytes, io.SeekStart); err == nil {
 			skipFirstPartial = true
 		}
 	}
-	_ = reader
 
 	var lines []string
-	scanner := bufio.NewScanner(reader)
+	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	first := true
 	for scanner.Scan() {

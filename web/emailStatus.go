@@ -30,6 +30,12 @@ type emailStatusPayload struct {
 
 // HandleEmailStatus 返回邮件通知模块的运行状态，供页面状态面板轮询
 func HandleEmailStatus(writer http.ResponseWriter, request *http.Request) {
+	// 只读接口，限定 GET：避免被当成跨站 POST 的落点（虽无副作用，但语义应明确）
+	if request.Method != http.MethodGet {
+		writer.Header().Set("Allow", http.MethodGet)
+		http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	conf, _ := config.GetConfigCached()
 	ipv4, ipv6, lastSent := config.GetEmailStateSnapshot()
 	detectedIPv4, detectedIPv6 := dns.LastDetected()
