@@ -4,7 +4,7 @@
 新增「公网 IP 变更时发送邮件提醒」功能。其余行为与原版一致。
 
 - 源码：`/home/mist/work/ddns-go`（分支 `main`，以仓库当前 HEAD 为准）
-- 镜像：`ddns-go-email:6.17.7-email-0.11`（约 40 MB，多阶段构建）
+- 镜像：`ddns-go-email:6.17.7-email-0.12`（约 40 MB，多阶段构建）
 - 测试：`/home/mist/work/test`（假 SMTP + 假回调，可随时重跑）
 
 > **不要使用 `-u` 参数。** 它会从上游 GitHub releases 下载官方二进制覆盖自身，
@@ -68,7 +68,7 @@ fork 版把默认检测间隔从 300 秒改为 **600 秒（10 分钟）**：
 ```bash
 docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.11 -l :9876 -f 120
+  ddns-go-email:6.17.7-email-0.12 -l :9876 -f 120
 ```
 
 ## 配置字段
@@ -113,7 +113,7 @@ cd ddns-go && git log --oneline -1        # 应看到对应的版本提交
 
 ```bash
 cd /home/mist/work/ddns-go
-sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.11 .
+sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.12 .
 ```
 
 ## 运行
@@ -122,7 +122,7 @@ sudo docker build -f Dockerfile.email -t ddns-go-email:6.17.7-email-0.11 .
 sudo docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 \
   -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.11
+  ddns-go-email:6.17.7-email-0.12
 ```
 
 打开 `http://<主机IP>:9876`，配置 DNS 与邮件通知后保存即可。
@@ -146,6 +146,30 @@ python3 /home/mist/work/test/verify_mail.py
 - IP 未变 → 不重复发送
 
 ## 更新记录
+
+### 6.17.7-email-0.12
+
+针对"长期运行"做的边界核验（soak、资源泄漏、状态文件健壮性、并发、输入边界）后修复的两处隐患。
+
+| 级别 | 问题 | 修复 |
+|---|---|---|
+| P1 | `web.MemoryLogs` 对裸切片做 append / 重新切片，**完全没有锁**。生产环境里后台 `RunOnce` 与 Web 请求处理器都会经 `log.Println` 并发写入，`go test -race` 直接报 DATA RACE；裁剪用的 `Logs[len-MaxNum:]` 在一次并发 append 之后还可能越界 panic，而 panic 若发生在 RunOnce 的 goroutine 里会终止整个进程 | 加 `sync.Mutex`，新增 `Snapshot()` / `Clear()` 方法；裁剪改为复制新切片，避免底层数组被无限向前推进 |
+| P2 | `sendMail` 无条件信任状态文件里的 `nextRetryAt`：一旦它落在很远的未来（系统时钟被大幅回拨、状态文件被改坏或异常写入），此后**每一次发信都静默跳过且没有任何日志**，邮件通知等于永久失效，但进程看起来一切正常 | 超过退避上限（60 分钟）两倍即判定异常，重置 `nextRetryAt` / `failCount` 并打日志自愈；`failCount` 为负数或离谱大值时同样重置 |
+
+核验后**未发现**问题的部分（可作为长期运行的依据）：
+
+- 400 轮连续发信 soak：堆增长约 0，文件句柄 8→8，goroutine 3→3，无泄漏
+- SMTP 持续失败 200 轮：句柄不增长
+- 历史文件追加 1200 条后稳定在 200 行 / 约 10.8 KB
+- 20 000 个源键的状态文件（738 KB）可正常加载
+- 500 个收件人、200 个域名：邮件 5.3 KB，无超长行（SMTP 行上限 1000）
+- 200 个源同轮全部变更：只发 1 封，符合"每轮最多一封"
+- 状态文件被截断、或并发写入 180 次后，仍是合法 JSON 且不 panic
+- 端口/加密方式等数值边界：`70000`、`-5`、`bogus` 均被正确拒绝
+
+新增测试：`TestMemoryLogsConcurrentSafety`（需 `-race`）、`TestEmailStateFarFutureRetrySelfHeals`。
+
+已知未处理：配置源改名后旧键不清理（每次改名净增 1 个键、约 30 字节，长期极缓慢累积）；SMTP 密码以明文存于配置文件（0600，协议所限）。
 
 ### 6.17.7-email-0.11
 

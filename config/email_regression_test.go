@@ -411,3 +411,31 @@ func TestEmailFailCountResetsAfterSuccess(t *testing.T) {
 		t.Errorf("发信成功后 failCount 仍为 %d，退避等级会被永久抬高", final.FailCount)
 	}
 }
+
+// 状态文件里的 nextRetryAt 落在很远的未来时必须自愈，而不是永久静默跳过。
+// 触发源：系统时钟被大幅回拨、状态文件被改坏或异常写入。
+func TestEmailStateFarFutureRetrySelfHeals(t *testing.T) {
+	dir := t.TempDir()
+	withConfigPath(t, filepath.Join(dir, "config.yaml"))
+	defer resetEmailStateForTest()
+
+	s := newRegSink(t)
+	conf := regConf(s.port, false)
+
+	storeEmailState(emailState{
+		LastIPv4:    "1.1.1.1",
+		Sources:     map[string]string{"s1|v4": "1.1.1.1"},
+		NextRetryAt: time.Now().Add(10 * 365 * 24 * time.Hour).Unix(),
+		FailCount:   999999,
+	})
+
+	NotifyIPChangeEmail(conf, []SourceAddr{{Key: "s1", IPv4: "2.2.2.2"}}, regOK)
+
+	if _, ok := s.await(5 * time.Second); !ok {
+		t.Fatal("远期 nextRetryAt 导致通知被永久跳过（未自愈）")
+	}
+	st := loadEmailState()
+	if st.NextRetryAt != 0 || st.FailCount != 0 {
+		t.Errorf("异常状态未被重置: nextRetryAt=%d failCount=%d", st.NextRetryAt, st.FailCount)
+	}
+}

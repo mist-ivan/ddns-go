@@ -438,7 +438,24 @@ var errSendBackoff = errors.New("email send is in backoff")
 // SMTP 配错时每轮都重试会白白占用 90 秒并拖慢 DNS 更新，所以必须退避。
 func (conf *Config) sendMail(subject, body string) error {
 	state := loadEmailState()
-	if state.NextRetryAt > 0 && time.Now().Unix() < state.NextRetryAt {
+	now := time.Now().Unix()
+
+	// 防御异常状态：NextRetryAt 若落在很远的未来（系统时钟被大幅回拨、状态文件被
+	// 手工改坏或异常写入），此后每一次发信都会被静默跳过、且没有任何日志，
+	// 长期运行下等于邮件通知永久失效。超过退避上限两倍即判定无效并当场自愈。
+	if state.NextRetryAt > 0 && state.NextRetryAt-now > int64((2*sendBackoffMax)/time.Second) {
+		util.Log("邮件通知: 状态文件中的 nextRetryAt 异常（%d），已忽略并重置", state.NextRetryAt)
+		state.NextRetryAt = 0
+		state.FailCount = 0
+		storeEmailState(state)
+	}
+	// FailCount 同理：负数或离谱的大值会让退避档位永远停在最高一级
+	if state.FailCount < 0 || state.FailCount > 1000 {
+		state.FailCount = 0
+		storeEmailState(state)
+	}
+
+	if state.NextRetryAt > 0 && now < state.NextRetryAt {
 		return errSendBackoff
 	}
 

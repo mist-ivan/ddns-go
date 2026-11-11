@@ -3,7 +3,7 @@
 #   REV=$(git rev-parse --short HEAD)
 #   docker build -f Dockerfile.email \
 #     --build-arg REVISION=$REV \
-#     -t ddns-go-email:6.17.7-email-0.11 .
+#     -t ddns-go-email:6.17.7-email-0.12 .
 FROM golang:1.25-alpine AS builder
 
 WORKDIR /src
@@ -14,7 +14,7 @@ RUN go mod download
 
 COPY . .
 
-ARG VERSION=6.17.7-email-0.11
+ARG VERSION=6.17.7-email-0.12
 RUN CGO_ENABLED=0 go build -trimpath \
       -ldflags "-s -w -X main.version=${VERSION}" \
       -o /out/ddns-go .
@@ -22,7 +22,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
 # Alpine 3.21 于 2026-11-01 EOL，这里改用当前受支持的版本
 FROM alpine:3.24
 
-ARG VERSION=6.17.7-email-0.11
+ARG VERSION=6.17.7-email-0.12
 ARG REVISION=unknown
 
 # 注意：故意不设置 org.opencontainers.image.source。
