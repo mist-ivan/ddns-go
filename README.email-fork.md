@@ -3,8 +3,8 @@
 基于 [jeessy2/ddns-go](https://github.com/jeessy2/ddns-go) **v6.17.7**（commit `7aad574`）的定制分支，
 新增「公网 IP 变更时发送邮件提醒」功能。其余行为与原版一致。
 
-- 源码：`/home/mist/work/ddns-go`（分支 `v0.15`，以仓库当前 HEAD 为准）
-- 镜像：`ddns-go-email:6.17.7-email-0.15`（多阶段构建，已移除 curl/grep）
+- 源码：`/home/mist/work/ddns-go`（分支 `v0.16`，以仓库当前 HEAD 为准）
+- 镜像：`ddns-go-email:6.17.7-email-0.16`（多阶段构建，已移除 curl/grep）
 - 测试：`/home/mist/emailtest`（假 SMTP + 假回调，可随时重跑）
 
 > **不要使用 `-u` 参数。** 它会从上游 GitHub releases 下载官方二进制覆盖自身，
@@ -68,7 +68,7 @@ fork 版把默认检测间隔从 300 秒改为 **600 秒（10 分钟）**：
 ```bash
 docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.15 -l :9876 -f 120
+  ddns-go-email:6.17.7-email-0.16 -l :9876 -f 120
 ```
 
 ## 配置字段
@@ -116,8 +116,8 @@ cd /home/mist/work/ddns-go
 REV=$(git rev-parse --short HEAD)
 sudo docker build -f Dockerfile.email \
   --build-arg REVISION=$REV \
-  -t ddns-go-email:6.17.7-email-0.15 \
-  -t ivanzzffii/ddns-go-email:6.17.7-email-0.15 .
+  -t ddns-go-email:6.17.7-email-0.16 \
+  -t ivanzzffii/ddns-go-email:6.17.7-email-0.16 .
 ```
 
 ## 运行
@@ -126,7 +126,7 @@ sudo docker build -f Dockerfile.email \
 sudo docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 \
   -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.15
+  ddns-go-email:6.17.7-email-0.16
 ```
 
 打开 `http://<主机IP>:9876`，配置 DNS 与邮件通知后保存即可。
@@ -150,6 +150,23 @@ python3 /home/mist/work/test/verify_mail.py
 - IP 未变 → 不重复发送
 
 ## 更新记录
+
+### 6.17.7-email-0.16
+
+按第三方 0.15 复核修复状态机边界和并发顺序问题。
+
+| 级别 | 问题 | 修复 |
+|---|---|---|
+| P2 | 无有效检测任务，或用户禁用/删除原先失败的地址族/配置源后，`observe(false)` 仍把旧告警当“恢复”，误发恢复邮件（甚至说 IPv4 恢复，实际坏的是 IPv6） | `emailState` 新增 `AlertedFamilies`/`AlertedSources`；告警时记录失败地址族和源 Key；恢复时只对“仍启用且确实恢复”的原失败族/源发信；原失败任务被移除/禁用时只清状态、不发恢复 |
+| P2 | `ResetEmailBackoff` 与在途 `sendMail` 的逻辑竞态：旧 SMTP 配置的发送在重置之后失败，会重新设置退避，压制新配置 | 新增 `emailBackoffEpoch`；`sendMail` 开始发送前记录 epoch，失败和成功两条路径都只在 epoch 未变化时更新退避字段；`ResetEmailBackoff` 先递增 epoch |
+| P2 | 测试邮件接口的 5 秒限频只限制开始间隔，45 秒会话可叠加多个并发 SMTP 连接 | 增加容量 1 的非阻塞信号量；同一时刻只允许一个测试邮件在发送；请求体限制 64 KB；每小时最多 30 次 |
+| P3 | 源身份 hash 未包含 DNS 账号 ID/ExtParam，两个同 provider/域名/URL、不同账号的无名配置可能共用 key | 把 `DNS.ID`、`DNS.ExtParam` 纳入 hash；唯一命名配置仍直接用名称 |
+| P3 | 多配置部分失败时，告警只写地址族，正文不知道具体哪个配置源失败 | `FetchStatus` 增加 `FailedSources`，`RunOnce` 填充；告警正文按“配置/地址族/域名”列出失败源 |
+| P3 | “指数退避”注释与实际的 10/60 分钟分级策略不符 | 改为“分级退避”注释；策略不变，避免影响已有状态 |
+
+**升级说明**：0.16 把 DNS ID/ExtParam 纳入无名/重名源的 hash，所以这些源从 0.15 升级后首轮会静默重建基线；如果恰好那轮 IP 变化，会漏一封。命名唯一的配置 key 不变。旧 `Sources` 键仍不清理。
+
+新增测试：`config/email_016_test.go`（无任务/禁用族不恢复、原失败族恢复、告警失败源、退避 epoch）、`dns/email_016_test.go`（DNS 账号区分）、`web/email_016_test.go`（测试邮件信号量/请求体上限）。
 
 ### 6.17.7-email-0.15
 
@@ -265,7 +282,7 @@ python3 /home/mist/work/test/verify_mail.py
 | 级别 | 问题 | 修复 |
 |---|---|---|
 | P1 | 0.9 的"主地址"方案只解决了"第二个源抖动"，**第一个源**抖动时主地址会变成第二个源的 IP，仍然发假变更邮件（实测 1→2→3 封） | 状态文件改为**按源记录基线**（`sources: {"A|v4": "1.1.1.1"}`）。每个源只和自己的上次值比；某源本轮取不到地址时不动它的基线；新出现的源静默记录基线。实测两个方向的抖动都不再发信，只有地址真的变化才发 |
-| P2 | SMTP 配错时会每轮重试，每次都阻塞约 90 秒，把 DNS 更新周期从 600 秒拖到约 780 秒 | 发信失败进入**指数退避**：失败 1 次退避 10 分钟，连续 3 次退避 60 分钟；成功后清零。状态记录在 `failCount` / `nextRetryAt` |
+| P2 | SMTP 配错时会每轮重试，每次都阻塞约 90 秒，把 DNS 更新周期从 600 秒拖到约 780 秒 | 发信失败进入**分级退避**：失败 1-2 次退避 10 分钟，连续 3 次退避 60 分钟；成功后清零。状态记录在 `failCount` / `nextRetryAt` |
 | P2 | 一轮里可能同时发"恢复通知"和"变更邮件"（两封） | 每轮**最多一封**：本轮已发告警/恢复时不再追发变更邮件；同时把新的基线静默持久化，避免下一轮补发 |
 | P2 | `save.go` 每次保存都 `go dns.RunOnce()`，SMTP 慢时连点保存会堆积 goroutine | 新增 `dns.RunOnceAsync()`，已有排队任务时直接跳过 |
 | P2 | 历史摘要每次轮询全量读 `.email-history.jsonl`；`scanner.Err()` 未检查，超长行会静默丢历史 | 文件超过 256 KB 时只读尾部 128 KB；补上错误日志 |

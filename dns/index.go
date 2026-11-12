@@ -157,6 +157,10 @@ func RunOnce() {
 		ipv4SuccessCount, ipv6SuccessCount   int
 		// sources 按配置源记录本轮地址，供邮件模块"按源比对"
 		sources []config.SourceAddr
+		// failedSources 记录具体哪个配置源/地址族失败，供告警正文明细
+		failedSources []config.FailedSource
+		// configuredSources 是本轮仍然有效的源 Key 集合
+		configuredSources []string
 	)
 
 	// 重名配置需要内容 hash 才能区分；先统计全量名称，避免“第一个叫 A、
@@ -256,6 +260,24 @@ func RunOnce() {
 			}
 		}
 		key, label, sourceDomains := sourceIdentity(dc, i, nameCount)
+		if domains.Ipv4Configured || domains.Ipv6Configured {
+			configuredSources = append(configuredSources, key)
+		}
+		var failedFamilies []string
+		if domains.Ipv4Configured && domains.Ipv4Addr == "" {
+			failedFamilies = append(failedFamilies, "IPv4")
+		}
+		if domains.Ipv6Configured && domains.Ipv6Addr == "" {
+			failedFamilies = append(failedFamilies, "IPv6")
+		}
+		if len(failedFamilies) > 0 {
+			failedSources = append(failedSources, config.FailedSource{
+				Key:      key,
+				Label:    label,
+				Domains:  sourceDomains,
+				Families: failedFamilies,
+			})
+		}
 		sources = append(sources, config.SourceAddr{
 			Key:     key,
 			Label:   label,
@@ -287,10 +309,12 @@ func RunOnce() {
 	// 邮件比对只用"主地址"（按配置顺序第一个非空值）：
 	// 多个配置取到不同地址时，拼成 "a,b" 会因单个源抖动被误判为 IP 变更。
 	config.NotifyIPChangeEmail(&conf, sources, config.FetchStatus{
-		IPv4Expected: ipv4Expected,
-		IPv4OK:       ipv4Got,
-		IPv6Expected: ipv6Expected,
-		IPv6OK:       ipv6Got,
+		IPv4Expected:      ipv4Expected,
+		IPv4OK:            ipv4Got,
+		IPv6Expected:      ipv6Expected,
+		IPv6OK:            ipv6Got,
+		FailedSources:     failedSources,
+		ConfiguredSources: configuredSources,
 	})
 }
 
@@ -341,6 +365,8 @@ func sourceIdentity(dc config.DnsConfig, index int, nameCount map[string]int) (k
 		_, _ = h.Write([]byte{0})
 	}
 	writeHashPart(dc.DNS.Name)
+	writeHashPart(dc.DNS.ID)
+	writeHashPart(dc.DNS.ExtParam)
 	writeHashPart(dc.Ipv4.GetType)
 	writeHashPart(dc.Ipv4.URL)
 	writeHashPart(dc.Ipv4.NetInterface)

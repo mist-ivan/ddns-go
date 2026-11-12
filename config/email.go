@@ -48,6 +48,14 @@ type Email struct {
 	AlertOnFetchFailure bool
 }
 
+// FailedSource 本轮取不到地址的配置源，用于告警邮件定位。
+type FailedSource struct {
+	Key      string
+	Label    string
+	Domains  []string
+	Families []string
+}
+
 // FetchStatus 本轮公网 IP 的期望与获取结果。
 // 分开记录 IPv4/IPv6，避免“只启用/只配置了一族”时误报整个公网 IP 获取失败。
 type FetchStatus struct {
@@ -55,6 +63,11 @@ type FetchStatus struct {
 	IPv4OK       bool
 	IPv6Expected bool
 	IPv6OK       bool
+	// FailedSources 是可选的明细，供告警正文说明具体哪个配置源失败。
+	FailedSources []FailedSource
+	// ConfiguredSources 是本轮仍然有效的配置源 Key 集合（用于恢复时确认
+	// 原失败源没有被删除/改名）。
+	ConfiguredSources []string
 }
 
 // Failed 是否至少有一个已配置的地址族在本轮获取失败
@@ -102,13 +115,21 @@ type emailState struct {
 	// Alerted 表示当前这轮故障已经发过告警。
 	// 必须落盘：只在内存里的话，容器重启后恢复通知就再也不会发（告警邮件里承诺过会发）。
 	Alerted bool `json:"alerted,omitempty"`
+	// AlertedFamilies 记录告警时失败的地址族（IPv4/IPv6）。
+	// 恢复时必须只针对“仍然启用且确实恢复”的原失败族，不能仅凭当前没有失败
+	// 就发恢复邮件：用户可能把失败的地址族/全部任务删掉了。
+	AlertedFamilies []string `json:"alertedFamilies,omitempty"`
+	// AlertedSources 记录告警时失败的配置源 Key；用于识别“原失败源被删除、
+	// 同地址族的另一个源仍然健康”这种不应发送恢复通知的情况。
+	AlertedSources []string `json:"alertedSources,omitempty"`
 
 	// Sources 按"配置源"记录上次见过的地址（键形如 "家里群晖|v4"）。
 	// 单独记每个源，某个源本轮取不到地址时不动它的基线，避免"某个源抖动"被当成 IP 变更。
 	Sources map[string]string `json:"sources,omitempty"`
 
-	// FailCount / NextRetryAt 用于发信失败的指数退避：
-	// SMTP 配错时不再每轮都重试（每次重试最多阻塞约 90 秒），而是逐步拉长间隔。
+	// FailCount / NextRetryAt 用于发信失败的分级退避：
+	// 失败 1-2 次退避 10 分钟，3 次及以后退避 60 分钟；成功后清零。
+	// SMTP 配错时不再每轮都重试（每次重试最多阻塞约 90 秒）。
 	FailCount   int   `json:"failCount,omitempty"`
 	NextRetryAt int64 `json:"nextRetryAt,omitempty"`
 }
@@ -537,9 +558,15 @@ var errSendBackoff = errors.New("email send is in backoff")
 // lastBackoffNotice 上次提示过的退避截止时间，避免每轮都刷同一条日志
 var lastBackoffNotice atomic.Int64
 
+// emailBackoffEpoch 每次 ResetEmailBackoff 递增。
+// sendMail 在发送前记录 epoch，发送结束后只有 epoch 未变化才允许更新退避字段；
+// 否则“旧 SMTP 配置的在途发送”会在新配置已经重置退避后再次把退避设回去。
+var emailBackoffEpoch atomic.Uint64
+
 // sendMail 带退避的发信：失败后逐步拉长重试间隔，成功则清零。
 // SMTP 配错时每轮都重试会白白占用 90 秒并拖慢 DNS 更新，所以必须退避。
 func (conf *Config) sendMail(subject, body string) error {
+	attemptEpoch := emailBackoffEpoch.Load()
 	state := loadEmailState()
 	now := time.Now().Unix()
 
@@ -575,6 +602,10 @@ func (conf *Config) sendMail(subject, body string) error {
 	if err := conf.Email.Send(subject, body); err != nil {
 		// 发送可能持续 45 秒，期间状态可能被 markNotifiedNow/ResetEmailBackoff
 		// 更新。失败计数必须基于“当前状态”原子累加，不能写回发送前的快照。
+		if emailBackoffEpoch.Load() != attemptEpoch {
+			util.Log("邮件通知: 发送失败发生在退避重置之后（旧配置/测试已解除退避），忽略本次失败")
+			return err
+		}
 		updateEmailState(func(cur *emailState) {
 			cur.FailCount++
 			backoff := sendBackoffInitial
@@ -587,10 +618,13 @@ func (conf *Config) sendMail(subject, body string) error {
 	}
 
 	// 成功后在锁内清零，避免用发送前的旧快照覆盖并发写入的 LastSent/Alerted。
-	updateEmailState(func(cur *emailState) {
-		cur.FailCount = 0
-		cur.NextRetryAt = 0
-	})
+	// 同样不能清掉重置之后新配置产生的退避。
+	if emailBackoffEpoch.Load() == attemptEpoch {
+		updateEmailState(func(cur *emailState) {
+			cur.FailCount = 0
+			cur.NextRetryAt = 0
+		})
+	}
 	return nil
 }
 
@@ -599,6 +633,8 @@ func (conf *Config) sendMail(subject, body string) error {
 // SMTP 配置改好、或"发送测试邮件"成功后必须调用：否则退避期（最长 60 分钟）内
 // 真实通知会被静默跳过，用户会以为功能坏了——而测试发信却能成功，更容易误判。
 func ResetEmailBackoff() {
+	// 先递增 epoch：在途的旧发送即使稍后失败/成功，也不能再改退避字段。
+	emailBackoffEpoch.Add(1)
 	lastBackoffNotice.Store(0)
 	changed := false
 	updateEmailState(func(state *emailState) {
@@ -848,10 +884,15 @@ const fetchAlertThreshold = 3
 type fetchFailureTracker struct {
 	consecutive int
 	alerted     bool
+	// families/sources 是本次已告警故障涉及的地址族和配置源 Key。
+	families []string
+	sources  []string
 }
 
 func (t *fetchFailureTracker) observe(failed bool) (alert bool, recovered bool) {
 	if !failed {
+		// 注意：这里不立即清空 families。调用方需要用它判断
+		// 原先失败的地址族是否仍然存在，再决定是否发恢复邮件。
 		recovered = t.alerted
 		t.consecutive = 0
 		t.alerted = false
@@ -873,11 +914,83 @@ var (
 	fetchTrackerLoaded bool
 )
 
-// setAlertedState 把"当前故障是否已告警"写进状态文件，重启后恢复通知才不会丢
-func setAlertedState(alerted bool) {
+// setAlertedStateWithAlert 把“当前故障是否已告警”、失败地址族和失败源一起写进状态文件。
+func setAlertedStateWithAlert(alerted bool, families, sources []string) {
+	copiedFamilies := append([]string(nil), families...)
+	copiedSources := append([]string(nil), sources...)
 	updateEmailState(func(state *emailState) {
 		state.Alerted = alerted
+		if alerted {
+			state.AlertedFamilies = copiedFamilies
+			state.AlertedSources = copiedSources
+		} else {
+			state.AlertedFamilies = nil
+			state.AlertedSources = nil
+		}
 	})
+}
+
+// setAlertedStateWithFamilies 兼容只关心地址族的调用方。
+func setAlertedStateWithFamilies(alerted bool, families []string) {
+	setAlertedStateWithAlert(alerted, families, nil)
+}
+
+// setAlertedState 兼容只关心布尔值的调用方；传 false 会一并清空地址族。
+func setAlertedState(alerted bool) {
+	setAlertedStateWithFamilies(alerted, nil)
+}
+
+// familiesToRecover 根据“告警时的失败族”和本轮状态，决定恢复通知应提哪些族。
+// previous 为空表示旧状态文件没有记录族，退回当前期望的族（兼容迁移）。
+func familiesToRecover(status FetchStatus, previous []string) []string {
+	if len(previous) == 0 {
+		return status.expectedFamilies()
+	}
+	seen := make(map[string]bool)
+	var out []string
+	for _, family := range previous {
+		switch {
+		case strings.EqualFold(family, "IPv4") && status.IPv4Expected && !seen["IPv4"]:
+			seen["IPv4"] = true
+			out = append(out, "IPv4")
+		case strings.EqualFold(family, "IPv6") && status.IPv6Expected && !seen["IPv6"]:
+			seen["IPv6"] = true
+			out = append(out, "IPv6")
+		}
+	}
+	return out
+}
+
+// failedSourceKeys 取告警时失败源的 Key 列表。
+func failedSourceKeys(sources []FailedSource) []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, src := range sources {
+		key := strings.TrimSpace(src.Key)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, key)
+	}
+	return out
+}
+
+// anySourceStillConfigured 判断告警时的失败源是否还有至少一个在本轮有效。
+func anySourceStillConfigured(previous, configured []string) bool {
+	if len(previous) == 0 {
+		return true
+	}
+	current := make(map[string]bool, len(configured))
+	for _, key := range configured {
+		current[key] = true
+	}
+	for _, key := range previous {
+		if current[key] {
+			return true
+		}
+	}
+	return false
 }
 
 // markNotifiedNow 记录"刚刚发过通知"的时间戳，但不改动 IP 基线。
@@ -901,13 +1014,18 @@ func handleFetchHealth(conf *Config, status FetchStatus, ipv4, ipv6 string, chan
 
 	fetchTrackLock.Lock()
 	if !fetchTrackerLoaded {
-		// 进程重启后恢复"是否已告警"，否则：
+		// 进程重启后恢复"是否已告警"和当时的失败地址族，否则：
 		// 故障期间重启 → 恢复时不会发恢复通知；已告警的故障会再告警一次
-		fetchTracker.alerted = loadEmailState().Alerted
+		state := loadEmailState()
+		fetchTracker.alerted = state.Alerted
+		fetchTracker.families = append([]string(nil), state.AlertedFamilies...)
+		fetchTracker.sources = append([]string(nil), state.AlertedSources...)
 		fetchTrackerLoaded = true
 	}
 	alert, recovered := fetchTracker.observe(status.Failed())
 	consecutive := fetchTracker.consecutive
+	previousFamilies := append([]string(nil), fetchTracker.families...)
+	previousSources := append([]string(nil), fetchTracker.sources...)
 	fetchTrackLock.Unlock()
 
 	if alert {
@@ -917,18 +1035,49 @@ func handleFetchHealth(conf *Config, status FetchStatus, ipv4, ipv6 string, chan
 			// 允许下一轮重试，避免一次发送失败就把告警吞掉
 			fetchTrackLock.Lock()
 			fetchTracker.alerted = false
+			fetchTracker.families = nil
+			fetchTracker.sources = nil
 			fetchTrackLock.Unlock()
 			return false, false
 		}
 		alertSent = true
+		families := status.failedFamilies()
+		sourceKeys := failedSourceKeys(status.FailedSources)
+		fetchTrackLock.Lock()
+		fetchTracker.families = append([]string(nil), families...)
+		fetchTracker.sources = append([]string(nil), sourceKeys...)
+		fetchTrackLock.Unlock()
 		AppendEmailHistory(EmailHistoryEntry{Kind: historyKindFetchFailed, IPv4: ipv4, IPv6: ipv6})
 		markNotifiedNow()
-		setAlertedState(true)
+		setAlertedStateWithAlert(true, families, sourceKeys)
 		util.Log("邮件通知: 连续 %d 轮未能获取 IP, 已发送告警邮件", consecutive)
 	}
 
 	if recovered {
-		subject, body := composeRecoveredMail(conf, status, ipv4, ipv6, changes)
+		if !anySourceStillConfigured(previousSources, status.ConfiguredSources) {
+			// 原失败源被删除/改名，同地址族的其它健康源不能冒充“恢复”。
+			fetchTrackLock.Lock()
+			fetchTracker.families = nil
+			fetchTracker.sources = nil
+			fetchTrackLock.Unlock()
+			setAlertedState(false)
+			util.Log("邮件通知: 原失败配置源已移除, 清除告警状态, 不发送恢复通知")
+			return alertSent, false
+		}
+		recoveryFamilies := familiesToRecover(status, previousFamilies)
+		if len(recoveryFamilies) == 0 {
+			// 原先失败的地址族已被删除/禁用，或已经没有任何有效检测任务。
+			// 这不是“恢复”，只清除告警状态，不能发恢复邮件。
+			fetchTrackLock.Lock()
+			fetchTracker.families = nil
+			fetchTracker.sources = nil
+			fetchTrackLock.Unlock()
+			setAlertedState(false)
+			util.Log("邮件通知: 原失败检测任务已移除或禁用, 清除告警状态, 不发送恢复通知")
+			return alertSent, false
+		}
+
+		subject, body := composeRecoveredMailForFamilies(conf, recoveryFamilies, ipv4, ipv6, changes)
 		if err := conf.sendMail(subject, body); err != nil {
 			util.Log("邮件通知: IP 获取恢复通知发送失败: %s", err)
 			// observe(false) 刚刚清掉了 alerted；这里必须还原，
@@ -936,6 +1085,8 @@ func handleFetchHealth(conf *Config, status FetchStatus, ipv4, ipv6 string, chan
 			fetchTrackLock.Lock()
 			fetchTracker.alerted = true
 			fetchTracker.consecutive = 0
+			fetchTracker.families = append([]string(nil), previousFamilies...)
+			fetchTracker.sources = append([]string(nil), previousSources...)
 			fetchTrackLock.Unlock()
 			return false, false
 		}
@@ -943,6 +1094,10 @@ func handleFetchHealth(conf *Config, status FetchStatus, ipv4, ipv6 string, chan
 		AppendEmailHistory(EmailHistoryEntry{Kind: historyKindRecovered, IPv4: ipv4, IPv6: ipv6})
 		markNotifiedNow()
 		setAlertedState(false)
+		fetchTrackLock.Lock()
+		fetchTracker.families = nil
+		fetchTracker.sources = nil
+		fetchTrackLock.Unlock()
 		util.Log("邮件通知: IP 获取已恢复, 已发送恢复通知")
 		return alertSent, true
 	}
@@ -978,6 +1133,7 @@ func composeFetchAlertMail(conf *Config, consecutive int, status FetchStatus, ip
 		fmt.Fprintf(&b, "主机: %s\n", hostname)
 		fmt.Fprintf(&b, "最后已知 IPv4: %s\n", displayOrDash(ipv4))
 		fmt.Fprintf(&b, "最后已知 IPv6: %s\n", displayOrDash(ipv6))
+		writeFailedSources(&b, status.FailedSources, zh)
 		fmt.Fprintf(&b, "\n请检查容器网络、%s 的 IP 查询接口是否可访问。恢复之后会再发一封通知。\n", familyText)
 	} else {
 		subject = fmt.Sprintf("[ddns-go] Failed to detect %s address for %d rounds", familyText, consecutive)
@@ -986,21 +1142,63 @@ func composeFetchAlertMail(conf *Config, consecutive int, status FetchStatus, ip
 		fmt.Fprintf(&b, "Host: %s\n", hostname)
 		fmt.Fprintf(&b, "Last known IPv4: %s\n", displayOrDash(ipv4))
 		fmt.Fprintf(&b, "Last known IPv6: %s\n", displayOrDash(ipv6))
+		writeFailedSources(&b, status.FailedSources, zh)
 		fmt.Fprintf(&b, "\nCheck the container network and whether the %s IP lookup endpoints are reachable. A recovery notice will follow.\n", familyText)
 	}
 	b.WriteString("\n-- \nddns-go email notification\n")
 	return subject, b.String()
 }
 
-// composeRecoveredMail 生成"已恢复"的邮件。
+// writeFailedSources 在告警正文里列出具体失败的配置源/地址族/域名。
+func writeFailedSources(b *strings.Builder, sources []FailedSource, zh bool) {
+	if len(sources) == 0 {
+		return
+	}
+	if zh {
+		b.WriteString("\n失败来源:\n")
+	} else {
+		b.WriteString("\nFailed sources:\n")
+	}
+	for _, src := range sources {
+		label := strings.TrimSpace(src.Label)
+		if label == "" {
+			label = src.Key
+		}
+		if label == "" {
+			label = "-"
+		}
+		families := strings.Join(src.Families, "/")
+		if families == "" {
+			families = "-"
+		}
+		domains := strings.Join(src.Domains, ", ")
+		if domains == "" {
+			domains = "-"
+		}
+		if zh {
+			fmt.Fprintf(b, "  配置: %s | 地址族: %s | 域名: %s\n", label, families, domains)
+		} else {
+			fmt.Fprintf(b, "  Config: %s | Family: %s | Domains: %s\n", label, families, domains)
+		}
+	}
+}
+
+// composeRecoveredMail 保留原签名，供已有测试/调用方使用。
+func composeRecoveredMail(conf *Config, status FetchStatus, ipv4, ipv6 string, changes []sourceChange) (subject, body string) {
+	return composeRecoveredMailForFamilies(conf, status.expectedFamilies(), ipv4, ipv6, changes)
+}
+
+// composeRecoveredMailForFamilies 生成"已恢复"的邮件。
+// families 只包含“原先失败、现在仍启用且已恢复”的地址族；
+// 如果原失败任务被删除/禁用，调用方不会走到这里。
 //
 // changes 是故障期间检测到的 IP 变更，一并列出：否则恢复后下一轮还会把同一批
 // 变更再发一封，用户会收到两封内容重叠的邮件。
-func composeRecoveredMail(conf *Config, status FetchStatus, ipv4, ipv6 string, changes []sourceChange) (subject, body string) {
+func composeRecoveredMailForFamilies(conf *Config, families []string, ipv4, ipv6 string, changes []sourceChange) (subject, body string) {
 	zh := strings.HasPrefix(strings.ToLower(conf.Lang), "zh")
 	now := time.Now().Format("2006-01-02 15:04:05 -07:00")
 	hostname, _ := os.Hostname()
-	familyText := strings.Join(status.expectedFamilies(), " / ")
+	familyText := strings.Join(families, " / ")
 	if familyText == "" {
 		familyText = "公网 IP"
 	}
