@@ -56,19 +56,12 @@ func EmailTest(writer http.ResponseWriter, request *http.Request) {
 	}
 
 	// 密码留空时沿用已保存的密码，方便在页面上直接点测试。
-	// 但仅当目标服务器/端口/账号与已保存配置一致时才复用：
-	// 否则等于把已保存的密码交给请求里指定的任意 SMTP 服务器（凭据外泄）。
+	// 只有目标主机/端口/账号/有效加密方式完全一致时才复用；否则等于把
+	// 已保存的密码交给请求里指定的另一个 SMTP 目标（凭据外泄）。
 	if email.Password == "" {
 		conf, _ := config.GetConfigCached()
 		saved := conf.Email
-		savedPort := saved.SMTPPort
-		if savedPort == 0 {
-			savedPort = 465
-		}
-		if saved.Password != "" &&
-			sameSMTPHost(saved.SMTPHost, email.SMTPHost) &&
-			savedPort == email.SMTPPort &&
-			strings.EqualFold(strings.TrimSpace(saved.Username), email.Username) {
+		if saved.Password != "" && saved.CredentialScopeEqual(email) {
 			email.Password = saved.Password
 		}
 	}

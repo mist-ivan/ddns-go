@@ -209,8 +209,8 @@ const I18N_MAP = {
     'zh-cn': 'SMTP 密码'
   },
   'EmailPasswordHelp': {
-    'en': 'Leave empty to keep the saved password or authorization code.',
-    'zh-cn': '留空表示不修改已保存的密码/授权码。'
+    'en': 'Leave empty to keep the saved password/authorization code. If the server, port, username, or encryption changes, you must enter it again.',
+    'zh-cn': '留空表示不修改已保存的密码/授权码；若同时修改服务器、端口、账号或加密方式，必须重新输入。'
   },
   'From': {
     'en': 'From',

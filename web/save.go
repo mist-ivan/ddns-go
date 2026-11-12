@@ -101,6 +101,15 @@ func checkAndSave(request *http.Request) string {
 	conf.Email.Encrypt = strings.TrimSpace(data.EmailEncrypt)
 	conf.Email.OnStart = data.EmailOnStart
 	conf.Email.AlertOnFetchFailure = data.EmailAlertOnFetch
+	// 密码/授权码只能在“同一个 SMTP 凭据作用域”内自动复用。主机/端口/
+	// 账号/有效加密方式变化时，如果用户没有输入新密码，必须拒绝保存，
+	// 不能把旧密码悄悄发给新的 SMTP 服务。这个检查同时也是 /emailTest
+	// 密码复用保护的上游保障。
+	if data.EmailPassword == "" && !data.EmailPasswordClear &&
+		strings.TrimSpace(oldEmail.Password) != "" &&
+		!oldEmail.CredentialScopeEqual(conf.Email) {
+		return util.LogStr("SMTP 服务器/端口/账号/加密方式已变化，请重新输入 SMTP 密码")
+	}
 	if data.EmailEnable {
 		if err := conf.Email.Validate(); err != nil {
 			return util.LogStr("邮件通知配置错误: %s", err.Error())

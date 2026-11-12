@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -161,6 +162,10 @@ func RunOnce() {
 		failedSources []config.FailedSource
 		// configuredSources 是本轮仍然有效的源 Key 集合
 		configuredSources []string
+		// 0.17 精确状态：sourceKey|IPv4 / sourceKey|IPv6
+		configuredFamilyKeys []string
+		failedFamilyKeys     []string
+		okFamilyKeys         []string
 	)
 
 	// 重名配置需要内容 hash 才能区分；先统计全量名称，避免“第一个叫 A、
@@ -263,6 +268,20 @@ func RunOnce() {
 		if domains.Ipv4Configured || domains.Ipv6Configured {
 			configuredSources = append(configuredSources, key)
 		}
+		if domains.Ipv4Configured {
+			familyKey := key + "|IPv4"
+			configuredFamilyKeys = append(configuredFamilyKeys, familyKey)
+			if domains.Ipv4Addr != "" {
+				okFamilyKeys = append(okFamilyKeys, familyKey)
+			}
+		}
+		if domains.Ipv6Configured {
+			familyKey := key + "|IPv6"
+			configuredFamilyKeys = append(configuredFamilyKeys, familyKey)
+			if domains.Ipv6Addr != "" {
+				okFamilyKeys = append(okFamilyKeys, familyKey)
+			}
+		}
 		var failedFamilies []string
 		if domains.Ipv4Configured && domains.Ipv4Addr == "" {
 			failedFamilies = append(failedFamilies, "IPv4")
@@ -271,10 +290,13 @@ func RunOnce() {
 			failedFamilies = append(failedFamilies, "IPv6")
 		}
 		if len(failedFamilies) > 0 {
+			for _, family := range failedFamilies {
+				failedFamilyKeys = append(failedFamilyKeys, key+"|"+family)
+			}
 			failedSources = append(failedSources, config.FailedSource{
 				Key:      key,
 				Label:    label,
-				Domains:  sourceDomains,
+				Domains:  sourceDomainsForFamilies(dc, failedFamilies),
 				Families: failedFamilies,
 			})
 		}
@@ -315,14 +337,33 @@ func RunOnce() {
 		IPv6OK:            ipv6Got,
 		FailedSources:     failedSources,
 		ConfiguredSources: configuredSources,
+
+		FailedFamilyKeys:     failedFamilyKeys,
+		ConfiguredFamilyKeys: configuredFamilyKeys,
+		OKFamilyKeys:         okFamilyKeys,
 	})
 }
 
 // sourceDomains 返回配置里全部非空域名（去重、排序）。
 func sourceDomains(dc config.DnsConfig) []string {
+	return sourceDomainsForFamilies(dc, []string{"IPv4", "IPv6"})
+}
+
+// sourceDomainsForFamilies 只返回指定地址族的域名，供告警正文精确展示
+// “哪个地址族坏了、影响哪些域名”。
+func sourceDomainsForFamilies(dc config.DnsConfig, families []string) []string {
 	seen := make(map[string]bool)
 	var domains []string
-	for _, list := range [][]string{dc.Ipv4.Domains, dc.Ipv6.Domains} {
+	for _, family := range families {
+		var list []string
+		switch strings.ToLower(strings.TrimSpace(family)) {
+		case "ipv4":
+			list = dc.Ipv4.Domains
+		case "ipv6":
+			list = dc.Ipv6.Domains
+		default:
+			continue
+		}
 		for _, d := range list {
 			d = strings.TrimSpace(d)
 			if d == "" || seen[d] {
@@ -371,11 +412,22 @@ func sourceIdentity(dc config.DnsConfig, index int, nameCount map[string]int) (k
 	writeHashPart(dc.Ipv4.URL)
 	writeHashPart(dc.Ipv4.NetInterface)
 	writeHashPart(dc.Ipv4.Cmd)
+	writeHashPart(strconv.FormatBool(dc.Ipv4.Enable))
 	writeHashPart(dc.Ipv6.GetType)
 	writeHashPart(dc.Ipv6.URL)
 	writeHashPart(dc.Ipv6.NetInterface)
 	writeHashPart(dc.Ipv6.Cmd)
+	writeHashPart(dc.Ipv6.Ipv6Reg)
+	writeHashPart(strconv.FormatBool(dc.Ipv6.Enable))
 	writeHashPart(dc.HttpInterface)
+	// 域名按族分别写入：同一个合并域名集合，如果 A/AAAA 的归属被对调，
+	// 也不能被当成同一个源。
+	for _, d := range sourceDomainsForFamilies(dc, []string{"IPv4"}) {
+		writeHashPart("v4:" + d)
+	}
+	for _, d := range sourceDomainsForFamilies(dc, []string{"IPv6"}) {
+		writeHashPart("v6:" + d)
+	}
 	for _, d := range domains {
 		writeHashPart(d)
 	}

@@ -65,17 +65,25 @@ type FetchStatus struct {
 	IPv6OK       bool
 	// FailedSources 是可选的明细，供告警正文说明具体哪个配置源失败。
 	FailedSources []FailedSource
-	// ConfiguredSources 是本轮仍然有效的配置源 Key 集合（用于恢复时确认
-	// 原失败源没有被删除/改名）。
+	// ConfiguredSources 是本轮仍然有效的配置源 Key 集合（用于兼容旧状态和旧测试）。
 	ConfiguredSources []string
+
+	// 下面是 0.17 起的精确状态：键形如 "sourceKey|IPv4" / "sourceKey|IPv6"。
+	// 只做“有没有失败”的聚合判断，无法知道是哪个源/哪个族的新故障，恢复时
+	// 也无法确认原失败项是否真的仍启用并已恢复。旧调用方不填这些字段时，
+	// 下面的方法会回退到 IPv4Expected/IPv4OK 和 FailedSources 的族级信息。
+	FailedFamilyKeys     []string
+	ConfiguredFamilyKeys []string
+	OKFamilyKeys         []string
 }
 
 // Failed 是否至少有一个已配置的地址族在本轮获取失败
 func (s FetchStatus) Failed() bool {
-	return (s.IPv4Expected && !s.IPv4OK) || (s.IPv6Expected && !s.IPv6OK)
+	return len(s.failureKeys()) > 0
 }
 
-func (s FetchStatus) failedFamilies() []string {
+// legacyFailedFamilies 兼容只填 IPv4Expected/IPv4OK 的旧调用方。
+func (s FetchStatus) legacyFailedFamilies() []string {
 	var out []string
 	if s.IPv4Expected && !s.IPv4OK {
 		out = append(out, "IPv4")
@@ -84,6 +92,10 @@ func (s FetchStatus) failedFamilies() []string {
 		out = append(out, "IPv6")
 	}
 	return out
+}
+
+func (s FetchStatus) failedFamilies() []string {
+	return uniqueFamiliesFromKeys(s.failureKeys())
 }
 
 func (s FetchStatus) expectedFamilies() []string {
@@ -97,12 +109,287 @@ func (s FetchStatus) expectedFamilies() []string {
 	return out
 }
 
+func canonicalFamily(family string) string {
+	switch strings.ToLower(strings.TrimSpace(family)) {
+	case "ipv4":
+		return "IPv4"
+	case "ipv6":
+		return "IPv6"
+	default:
+		return ""
+	}
+}
+
+// failureKey 生成状态机内部使用的 "sourceKey|IPv4" 键。sourceKey 为空时
+// 退化为族级键，兼容只有聚合状态的旧调用方。
+func failureKey(source, family string) string {
+	source = strings.TrimSpace(source)
+	family = canonicalFamily(family)
+	if family == "" {
+		return ""
+	}
+	if source == "" {
+		return family
+	}
+	return source + "|" + family
+}
+
+func splitFailureKey(key string) (source, family string) {
+	key = strings.TrimSpace(key)
+	if i := strings.LastIndex(key, "|"); i >= 0 {
+		return key[:i], canonicalFamily(key[i+1:])
+	}
+	return "", canonicalFamily(key)
+}
+
+func sortedUnique(in []string) []string {
+	seen := make(map[string]bool, len(in))
+	out := make([]string, 0, len(in))
+	for _, item := range in {
+		item = strings.TrimSpace(item)
+		if item == "" || seen[item] {
+			continue
+		}
+		seen[item] = true
+		out = append(out, item)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func mergeFailureKeys(a, b []string) []string {
+	out := make([]string, 0, len(a)+len(b))
+	out = append(out, a...)
+	out = append(out, b...)
+	return sortedUnique(out)
+}
+
+// failureKeys 返回本轮精确的失败项。优先使用 FailedFamilyKeys；否则从
+// FailedSources 构造；再否则回退到族级聚合状态。
+func (s FetchStatus) failureKeys() []string {
+	if len(s.FailedFamilyKeys) > 0 {
+		return sortedUnique(s.FailedFamilyKeys)
+	}
+	var out []string
+	for _, src := range s.FailedSources {
+		for _, fam := range src.Families {
+			if key := failureKey(src.Key, fam); key != "" {
+				out = append(out, key)
+			}
+		}
+	}
+	if len(out) > 0 {
+		return sortedUnique(out)
+	}
+	return s.legacyFailedFamilies()
+}
+
+// configuredFamilyKeys 返回本轮仍启用/仍有效的 source|family 集合。
+func (s FetchStatus) configuredFamilyKeys() []string {
+	if len(s.ConfiguredFamilyKeys) > 0 {
+		return sortedUnique(s.ConfiguredFamilyKeys)
+	}
+	var out []string
+	if len(s.ConfiguredSources) > 0 {
+		for _, src := range s.ConfiguredSources {
+			if s.IPv4Expected {
+				if key := failureKey(src, "IPv4"); key != "" {
+					out = append(out, key)
+				}
+			}
+			if s.IPv6Expected {
+				if key := failureKey(src, "IPv6"); key != "" {
+					out = append(out, key)
+				}
+			}
+		}
+	} else {
+		out = s.expectedFamilies()
+	}
+	return sortedUnique(out)
+}
+
+// okFamilyKeys 返回本轮成功获取地址的 source|family 集合。
+func (s FetchStatus) okFamilyKeys() []string {
+	if len(s.OKFamilyKeys) > 0 {
+		return sortedUnique(s.OKFamilyKeys)
+	}
+	var out []string
+	if len(s.ConfiguredSources) > 0 {
+		for _, src := range s.ConfiguredSources {
+			if s.IPv4Expected && s.IPv4OK {
+				if key := failureKey(src, "IPv4"); key != "" {
+					out = append(out, key)
+				}
+			}
+			if s.IPv6Expected && s.IPv6OK {
+				if key := failureKey(src, "IPv6"); key != "" {
+					out = append(out, key)
+				}
+			}
+		}
+	} else {
+		if s.IPv4Expected && s.IPv4OK {
+			out = append(out, "IPv4")
+		}
+		if s.IPv6Expected && s.IPv6OK {
+			out = append(out, "IPv6")
+		}
+	}
+	return sortedUnique(out)
+}
+
+func familyExpected(status FetchStatus, family string) bool {
+	switch canonicalFamily(family) {
+	case "IPv4":
+		return status.IPv4Expected
+	case "IPv6":
+		return status.IPv6Expected
+	default:
+		return false
+	}
+}
+
+func familyOK(status FetchStatus, family string) bool {
+	switch canonicalFamily(family) {
+	case "IPv4":
+		return status.IPv4Expected && status.IPv4OK
+	case "IPv6":
+		return status.IPv6Expected && status.IPv6OK
+	default:
+		return false
+	}
+}
+
+// uniqueFamiliesFromKeys 从 source|family 键中提取唯一的地址族，并按 IPv4、
+// IPv6 的固定顺序输出，避免邮件/状态里的顺序随 map 遍历变化。
+func uniqueFamiliesFromKeys(keys []string) []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, key := range keys {
+		_, family := splitFailureKey(key)
+		if family == "" || seen[family] {
+			continue
+		}
+		seen[family] = true
+		out = append(out, family)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		rank := func(f string) int {
+			if f == "IPv4" {
+				return 0
+			}
+			return 1
+		}
+		return rank(out[i]) < rank(out[j])
+	})
+	return out
+}
+
+func sourcesFromFailureKeys(keys []string) []string {
+	var out []string
+	for _, key := range keys {
+		source, _ := splitFailureKey(key)
+		if source != "" {
+			out = append(out, source)
+		}
+	}
+	return sortedUnique(out)
+}
+
+// failureKeysFromLegacy 把旧状态里的“族列表 + 源列表”转换成 0.17 的精确键。
+// 旧状态没有保存源和族的对应关系，只能做笛卡尔组合；这是迁移兼容路径，
+// 新告警不会再写入这种模糊状态。
+func failureKeysFromLegacy(families, sources []string) []string {
+	var fams []string
+	for _, family := range families {
+		if family = canonicalFamily(family); family != "" {
+			fams = append(fams, family)
+		}
+	}
+	fams = sortedUnique(fams)
+	if len(fams) == 0 {
+		return nil
+	}
+	srcs := sortedUnique(sources)
+	if len(srcs) == 0 {
+		return fams
+	}
+	out := make([]string, 0, len(fams)*len(srcs))
+	for _, src := range srcs {
+		for _, family := range fams {
+			if key := failureKey(src, family); key != "" {
+				out = append(out, key)
+			}
+		}
+	}
+	return sortedUnique(out)
+}
+
+// failureKeyCovered 判断当前失败项是否已被已告警集合覆盖。旧状态里的族级键
+// 可以覆盖同族的 source|family 键，用于升级迁移时避免重复告警。
+func failureKeyCovered(previous []string, current string) bool {
+	for _, old := range previous {
+		if old == current {
+			return true
+		}
+		oldSource, oldFamily := splitFailureKey(old)
+		_, currentFamily := splitFailureKey(current)
+		if oldSource == "" && oldFamily != "" && oldFamily == currentFamily {
+			return true
+		}
+	}
+	return false
+}
+
+func hasNewFailure(previous, current []string) bool {
+	for _, key := range current {
+		if !failureKeyCovered(previous, key) {
+			return true
+		}
+	}
+	return false
+}
+
+// recoverableFailureKeys 只返回“原来失败、现在仍启用、现在确实成功”的项。
+// 原失败源删掉/改名、或只关闭了出问题的那一族时，对应键不会出现在这里。
+func recoverableFailureKeys(previous []string, status FetchStatus) []string {
+	configured := make(map[string]bool)
+	for _, key := range status.configuredFamilyKeys() {
+		configured[key] = true
+	}
+	ok := make(map[string]bool)
+	for _, key := range status.okFamilyKeys() {
+		ok[key] = true
+	}
+
+	var out []string
+	for _, key := range previous {
+		source, family := splitFailureKey(key)
+		if family == "" {
+			continue
+		}
+		if source == "" {
+			// 旧状态只有族级信息：至少要求该族仍启用且成功。
+			if familyExpected(status, family) && familyOK(status, family) {
+				out = append(out, family)
+			}
+			continue
+		}
+		normalized := failureKey(source, family)
+		if configured[normalized] && ok[normalized] {
+			out = append(out, normalized)
+		}
+	}
+	return sortedUnique(out)
+}
+
 // smtpSessionTimeout 单次 SMTP 会话的总超时（从连接建立起算到会话结束）
 var smtpSessionTimeout = 45 * time.Second
 
 // emailState 记录上次成功通知过的 IP，用于判断"IP 是否真的变了"
 type emailState struct {
-	// Schema 状态文件结构版本。0.14 起写入 2。
+	// Schema 状态文件结构版本。0.14 起写入 2；0.17 起写入 3。
 	// 旧文件没有该字段，用于一次性迁移 ChangeNotified 的含义。
 	Schema int `json:"schema,omitempty"`
 
@@ -122,6 +409,10 @@ type emailState struct {
 	// AlertedSources 记录告警时失败的配置源 Key；用于识别“原失败源被删除、
 	// 同地址族的另一个源仍然健康”这种不应发送恢复通知的情况。
 	AlertedSources []string `json:"alertedSources,omitempty"`
+	// AlertedFailureKeys 是 0.17 起的精确告警集合，元素形如
+	// "sourceKey|IPv4"；恢复时逐项确认该源/该族仍启用且已成功。
+	// 旧状态没有这个字段时，由 AlertedFamilies/AlertedSources 迁移生成。
+	AlertedFailureKeys []string `json:"alertedFailureKeys,omitempty"`
 
 	// Sources 按"配置源"记录上次见过的地址（键形如 "家里群晖|v4"）。
 	// 单独记每个源，某个源本轮取不到地址时不动它的基线，避免"某个源抖动"被当成 IP 变更。
@@ -134,7 +425,7 @@ type emailState struct {
 	NextRetryAt int64 `json:"nextRetryAt,omitempty"`
 }
 
-const emailStateSchema = 2
+const emailStateSchema = 3
 
 // loginAuth 实现 SMTP AUTH LOGIN，部分邮件服务商只支持该方式
 type loginAuth struct {
@@ -267,6 +558,28 @@ func parseRecipients(raw string) ([]*mail.Address, error) {
 		return nil, errors.New("收件人不能为空")
 	}
 	return list, nil
+}
+
+// CredentialScopeEqual 判断两份 SMTP 配置是否仍属于同一个“凭据作用域”。
+// 密码/授权码只能自动复用于相同的主机、端口、账号和有效加密方式；改变其中
+// 任何一项都必须重新输入密码，避免把旧凭据发给新的 SMTP 服务。
+func (e Email) CredentialScopeEqual(other Email) bool {
+	normalizePort := func(port int) int {
+		if port <= 0 {
+			return 465
+		}
+		return port
+	}
+	ePort, otherPort := normalizePort(e.SMTPPort), normalizePort(other.SMTPPort)
+	eEncrypt, eErr := normalizeEncrypt(e.Encrypt, ePort)
+	otherEncrypt, otherErr := normalizeEncrypt(other.Encrypt, otherPort)
+	if eErr != nil || otherErr != nil {
+		return false
+	}
+	return strings.EqualFold(normalizeSMTPHost(e.SMTPHost), normalizeSMTPHost(other.SMTPHost)) &&
+		ePort == otherPort &&
+		strings.TrimSpace(e.Username) == strings.TrimSpace(other.Username) &&
+		eEncrypt == otherEncrypt
 }
 
 // Validate 检查配置是否足以发信
@@ -880,15 +1193,23 @@ func NotifyIPChangeEmail(conf *Config, sources []SourceAddr, fetchStatus FetchSt
 // fetchAlertThreshold 连续多少轮取不到 IP 才告警，避免网络抖动造成误报
 const fetchAlertThreshold = 3
 
-// fetchFailureTracker 记录连续失败次数，保证一次故障只告警一次
+// fetchFailureTracker 记录连续失败次数和已告警的精确失败项。
+// 0.17 起不再只记一个 alerted 布尔值：当 IPv4 已经告警、IPv6 又失败时，
+// 新出现的失败项必须能触发新的告警，而不是被旧的 alerted 永久压住。
 type fetchFailureTracker struct {
 	consecutive int
 	alerted     bool
-	// families/sources 是本次已告警故障涉及的地址族和配置源 Key。
+	// failureKeys 是已经告警覆盖的失败项，键形如 "sourceKey|IPv4"。
+	failureKeys []string
+	// pendingKeys/pendingCount 用于在旧故障仍在时，为新出现的失败项单独累计阈值。
+	pendingKeys  []string
+	pendingCount int
+	// families/sources 是为状态兼容保留的派生视图。
 	families []string
 	sources  []string
 }
 
+// observe 保留给旧调用方/旧测试：只处理布尔故障状态。
 func (t *fetchFailureTracker) observe(failed bool) (alert bool, recovered bool) {
 	if !failed {
 		// 注意：这里不立即清空 families。调用方需要用它判断
@@ -907,6 +1228,81 @@ func (t *fetchFailureTracker) observe(failed bool) (alert bool, recovered bool) 
 	return false, false
 }
 
+func (t *fetchFailureTracker) syncDerived() {
+	t.families = uniqueFamiliesFromKeys(t.failureKeys)
+	t.sources = sourcesFromFailureKeys(t.failureKeys)
+}
+
+// observeStatus 用精确的 source|family 失败集合驱动告警状态。
+// - 旧故障期间出现新失败项：先按阈值单独累计，达到阈值后发新告警；
+// - 旧故障仍在时不重置旧告警，避免丢失最终恢复通知；
+// - 全部健康时返回 recovered，调用方按 previousKeys 逐项判断是否真的恢复。
+func (t *fetchFailureTracker) observeStatus(status FetchStatus) (alert bool, recovered bool) {
+	keys := status.failureKeys()
+	if len(keys) == 0 {
+		recovered = t.alerted
+		t.consecutive = 0
+		t.alerted = false
+		t.failureKeys = nil
+		t.pendingKeys = nil
+		t.pendingCount = 0
+		t.families = nil
+		t.sources = nil
+		return false, recovered
+	}
+
+	if !t.alerted {
+		t.consecutive++
+		if t.consecutive >= fetchAlertThreshold {
+			t.alerted = true
+			t.failureKeys = append([]string(nil), keys...)
+			t.pendingKeys = nil
+			t.pendingCount = 0
+			t.syncDerived()
+			return true, false
+		}
+		return false, false
+	}
+
+	// 兼容没有任何失败项明细的旧状态：先采用当前集合，不在升级首轮重复告警。
+	if len(t.failureKeys) == 0 {
+		t.failureKeys = append([]string(nil), keys...)
+		t.syncDerived()
+		return false, false
+	}
+
+	newKeys := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if !failureKeyCovered(t.failureKeys, key) {
+			newKeys = append(newKeys, key)
+		}
+	}
+	if len(newKeys) > 0 {
+		t.pendingKeys = mergeFailureKeys(t.pendingKeys, newKeys)
+		t.pendingCount++
+		if t.pendingCount >= fetchAlertThreshold {
+			t.failureKeys = mergeFailureKeys(t.failureKeys, keys)
+			t.consecutive = t.pendingCount
+			t.pendingKeys = nil
+			t.pendingCount = 0
+			t.syncDerived()
+			return true, false
+		}
+		// 新失败项在达到阈值前不能并入 failureKeys，否则下一轮就会被
+		// failureKeyCovered 当成“已告警”，永远不会达到阈值。
+		t.syncDerived()
+		return false, false
+	}
+
+	// 没有新失败项时，把当前仍失败的项并入已告警集合；已经恢复的旧项
+	// 会保留到恢复通知成功，或被“原任务已删除/禁用”逻辑清理。
+	t.pendingKeys = nil
+	t.pendingCount = 0
+	t.failureKeys = mergeFailureKeys(t.failureKeys, keys)
+	t.syncDerived()
+	return false, false
+}
+
 var (
 	fetchTrackLock sync.Mutex
 	fetchTracker   fetchFailureTracker
@@ -914,20 +1310,28 @@ var (
 	fetchTrackerLoaded bool
 )
 
-// setAlertedStateWithAlert 把“当前故障是否已告警”、失败地址族和失败源一起写进状态文件。
-func setAlertedStateWithAlert(alerted bool, families, sources []string) {
-	copiedFamilies := append([]string(nil), families...)
-	copiedSources := append([]string(nil), sources...)
+// setAlertedStateWithFailures 把“当前故障是否已告警”和精确失败项写入状态文件。
+func setAlertedStateWithFailures(alerted bool, keys []string) {
+	copiedKeys := append([]string(nil), keys...)
+	families := uniqueFamiliesFromKeys(copiedKeys)
+	sources := sourcesFromFailureKeys(copiedKeys)
 	updateEmailState(func(state *emailState) {
 		state.Alerted = alerted
 		if alerted {
-			state.AlertedFamilies = copiedFamilies
-			state.AlertedSources = copiedSources
+			state.AlertedFailureKeys = copiedKeys
+			state.AlertedFamilies = families
+			state.AlertedSources = sources
 		} else {
+			state.AlertedFailureKeys = nil
 			state.AlertedFamilies = nil
 			state.AlertedSources = nil
 		}
 	})
+}
+
+// setAlertedStateWithAlert 兼容旧调用方：把族/源转换为精确失败项后写入。
+func setAlertedStateWithAlert(alerted bool, families, sources []string) {
+	setAlertedStateWithFailures(alerted, failureKeysFromLegacy(families, sources))
 }
 
 // setAlertedStateWithFamilies 兼容只关心地址族的调用方。
@@ -1014,89 +1418,114 @@ func handleFetchHealth(conf *Config, status FetchStatus, ipv4, ipv6 string, chan
 
 	fetchTrackLock.Lock()
 	if !fetchTrackerLoaded {
-		// 进程重启后恢复"是否已告警"和当时的失败地址族，否则：
-		// 故障期间重启 → 恢复时不会发恢复通知；已告警的故障会再告警一次
+		// 进程重启后恢复“是否已告警”和已告警的精确失败项，否则：
+		// 故障期间重启 → 恢复时不会发恢复通知；已告警的故障会再告警一次。
 		state := loadEmailState()
 		fetchTracker.alerted = state.Alerted
-		fetchTracker.families = append([]string(nil), state.AlertedFamilies...)
-		fetchTracker.sources = append([]string(nil), state.AlertedSources...)
+		keys := append([]string(nil), state.AlertedFailureKeys...)
+		if len(keys) == 0 && state.Alerted {
+			keys = failureKeysFromLegacy(state.AlertedFamilies, state.AlertedSources)
+		}
+		fetchTracker.failureKeys = keys
+		fetchTracker.families = uniqueFamiliesFromKeys(keys)
+		fetchTracker.sources = sourcesFromFailureKeys(keys)
 		fetchTrackerLoaded = true
 	}
-	alert, recovered := fetchTracker.observe(status.Failed())
-	consecutive := fetchTracker.consecutive
+
+	// 必须在 observeStatus 之前留快照：健康轮次会清空 tracker，但恢复判断
+	// 仍需要知道“告警时到底坏了哪些 source|family”。
+	previousKeys := append([]string(nil), fetchTracker.failureKeys...)
 	previousFamilies := append([]string(nil), fetchTracker.families...)
 	previousSources := append([]string(nil), fetchTracker.sources...)
+	alert, recovered := fetchTracker.observeStatus(status)
+	consecutive := fetchTracker.consecutive
+	alertKeys := append([]string(nil), fetchTracker.failureKeys...)
 	fetchTrackLock.Unlock()
 
 	if alert {
 		subject, body := composeFetchAlertMail(conf, consecutive, status, ipv4, ipv6)
 		if err := conf.sendMail(subject, body); err != nil {
 			util.Log("邮件通知: IP 获取失败告警发送失败: %s", err)
-			// 允许下一轮重试，避免一次发送失败就把告警吞掉
+			// 允许下一轮重试，避免一次发送失败就把告警吞掉。
+			// 同时清掉旧告警：新告警完整覆盖了当前失败项，旧状态不能再压住它。
 			fetchTrackLock.Lock()
-			fetchTracker.alerted = false
-			fetchTracker.families = nil
-			fetchTracker.sources = nil
+			fetchTracker = fetchFailureTracker{}
+			fetchTrackerLoaded = true
 			fetchTrackLock.Unlock()
+			setAlertedStateWithFailures(false, nil)
 			return false, false
 		}
 		alertSent = true
-		families := status.failedFamilies()
-		sourceKeys := failedSourceKeys(status.FailedSources)
-		fetchTrackLock.Lock()
-		fetchTracker.families = append([]string(nil), families...)
-		fetchTracker.sources = append([]string(nil), sourceKeys...)
-		fetchTrackLock.Unlock()
+		if len(alertKeys) == 0 {
+			alertKeys = status.failureKeys()
+		}
 		AppendEmailHistory(EmailHistoryEntry{Kind: historyKindFetchFailed, IPv4: ipv4, IPv6: ipv6})
 		markNotifiedNow()
-		setAlertedStateWithAlert(true, families, sourceKeys)
+		setAlertedStateWithFailures(true, alertKeys)
 		util.Log("邮件通知: 连续 %d 轮未能获取 IP, 已发送告警邮件", consecutive)
 	}
 
 	if recovered {
-		if !anySourceStillConfigured(previousSources, status.ConfiguredSources) {
-			// 原失败源被删除/改名，同地址族的其它健康源不能冒充“恢复”。
-			fetchTrackLock.Lock()
-			fetchTracker.families = nil
-			fetchTracker.sources = nil
-			fetchTrackLock.Unlock()
-			setAlertedState(false)
-			util.Log("邮件通知: 原失败配置源已移除, 清除告警状态, 不发送恢复通知")
-			return alertSent, false
-		}
-		recoveryFamilies := familiesToRecover(status, previousFamilies)
-		if len(recoveryFamilies) == 0 {
-			// 原先失败的地址族已被删除/禁用，或已经没有任何有效检测任务。
-			// 这不是“恢复”，只清除告警状态，不能发恢复邮件。
-			fetchTrackLock.Lock()
-			fetchTracker.families = nil
-			fetchTracker.sources = nil
-			fetchTrackLock.Unlock()
-			setAlertedState(false)
-			util.Log("邮件通知: 原失败检测任务已移除或禁用, 清除告警状态, 不发送恢复通知")
-			return alertSent, false
+		var recoveryFamilies []string
+
+		if len(previousKeys) > 0 {
+			// 0.17 精确路径：逐项确认原失败源/族仍然启用且已经成功。
+			recoveredKeys := recoverableFailureKeys(previousKeys, status)
+			recoveryFamilies = uniqueFamiliesFromKeys(recoveredKeys)
+			if len(recoveryFamilies) == 0 {
+				fetchTrackLock.Lock()
+				fetchTracker = fetchFailureTracker{}
+				fetchTrackerLoaded = true
+				fetchTrackLock.Unlock()
+				setAlertedStateWithFailures(false, nil)
+				util.Log("邮件通知: 原失败项已移除、禁用或未恢复, 清除告警状态, 不发送恢复通知")
+				return alertSent, false
+			}
+		} else {
+			// 兼容 0.17 之前没有失败项明细的状态：沿用旧的族级判断。
+			if !anySourceStillConfigured(previousSources, status.ConfiguredSources) {
+				fetchTrackLock.Lock()
+				fetchTracker = fetchFailureTracker{}
+				fetchTrackerLoaded = true
+				fetchTrackLock.Unlock()
+				setAlertedStateWithFailures(false, nil)
+				util.Log("邮件通知: 原失败配置源已移除, 清除告警状态, 不发送恢复通知")
+				return alertSent, false
+			}
+			recoveryFamilies = familiesToRecover(status, previousFamilies)
+			if len(recoveryFamilies) == 0 {
+				fetchTrackLock.Lock()
+				fetchTracker = fetchFailureTracker{}
+				fetchTrackerLoaded = true
+				fetchTrackLock.Unlock()
+				setAlertedStateWithFailures(false, nil)
+				util.Log("邮件通知: 原失败检测任务已移除或禁用, 清除告警状态, 不发送恢复通知")
+				return alertSent, false
+			}
 		}
 
 		subject, body := composeRecoveredMailForFamilies(conf, recoveryFamilies, ipv4, ipv6, changes)
 		if err := conf.sendMail(subject, body); err != nil {
 			util.Log("邮件通知: IP 获取恢复通知发送失败: %s", err)
-			// observe(false) 刚刚清掉了 alerted；这里必须还原，
-			// 否则下一轮健康时不会再触发恢复通知，通知就永久丢失了。
+			// observeStatus 已经清掉 alerted；这里必须还原，否则下一轮健康时
+			// 不会再触发恢复通知，通知就永久丢失了。
 			fetchTrackLock.Lock()
 			fetchTracker.alerted = true
 			fetchTracker.consecutive = 0
+			fetchTracker.failureKeys = append([]string(nil), previousKeys...)
 			fetchTracker.families = append([]string(nil), previousFamilies...)
 			fetchTracker.sources = append([]string(nil), previousSources...)
+			fetchTrackerLoaded = true
 			fetchTrackLock.Unlock()
 			return false, false
 		}
 		recoveredSent = true
 		AppendEmailHistory(EmailHistoryEntry{Kind: historyKindRecovered, IPv4: ipv4, IPv6: ipv6})
 		markNotifiedNow()
-		setAlertedState(false)
+		setAlertedStateWithFailures(false, nil)
 		fetchTrackLock.Lock()
-		fetchTracker.families = nil
-		fetchTracker.sources = nil
+		fetchTracker = fetchFailureTracker{}
+		fetchTrackerLoaded = true
 		fetchTrackLock.Unlock()
 		util.Log("邮件通知: IP 获取已恢复, 已发送恢复通知")
 		return alertSent, true
@@ -1587,6 +2016,15 @@ var (
 func normalizeEmailState(state *emailState) {
 	state.LastIPv4 = normalizeIPValue(state.LastIPv4)
 	state.LastIPv6 = normalizeIPValue(state.LastIPv6)
+	if state.Alerted && len(state.AlertedFailureKeys) == 0 {
+		state.AlertedFailureKeys = failureKeysFromLegacy(state.AlertedFamilies, state.AlertedSources)
+	}
+	if !state.Alerted {
+		state.AlertedFailureKeys = nil
+	}
+	state.AlertedFailureKeys = sortedUnique(state.AlertedFailureKeys)
+	state.AlertedFamilies = uniqueFamiliesFromKeys(state.AlertedFailureKeys)
+	state.AlertedSources = sourcesFromFailureKeys(state.AlertedFailureKeys)
 	if state.Sources == nil {
 		return
 	}
@@ -1625,6 +2063,11 @@ func loadEmailStateLocked() emailState {
 			state.ChangeNotified = true
 		}
 		state.Schema = emailStateSchema
+	}
+	// 0.16 及更早的状态只有“族列表 + 源列表”，没有 source|family 对应关系。
+	// 这里做一次兼容迁移；新告警会写入精确的 AlertedFailureKeys。
+	if state.Alerted && len(state.AlertedFailureKeys) == 0 {
+		state.AlertedFailureKeys = failureKeysFromLegacy(state.AlertedFamilies, state.AlertedSources)
 	}
 	normalizeEmailState(&state)
 	return state
@@ -1704,8 +2147,8 @@ func commitEmailState(next emailState) {
 	})
 }
 
-// writeEmailStateFile 先写临时文件再 rename，避免进程中途被杀留下半个 JSON。
-// 调用方必须持有 emailStateLock，保证并发写串行化。
+// writeEmailStateFile 先写临时文件、fsync、再 rename，避免进程中途被杀或
+// 掉电留下半个/空 JSON。调用方必须持有 emailStateLock，保证并发写串行化。
 func writeEmailStateFile(state emailState) error {
 	byt, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
@@ -1714,7 +2157,22 @@ func writeEmailStateFile(state emailState) error {
 
 	path := emailStatePath()
 	tmp := path + ".tmp"
-	if err = os.WriteFile(tmp, byt, 0600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	if _, err = f.Write(byt); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err = f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err = f.Close(); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err = os.Rename(tmp, path); err != nil {

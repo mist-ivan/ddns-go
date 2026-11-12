@@ -3,8 +3,8 @@
 基于 [jeessy2/ddns-go](https://github.com/jeessy2/ddns-go) **v6.17.7**（commit `7aad574`）的定制分支，
 新增「公网 IP 变更时发送邮件提醒」功能。其余行为与原版一致。
 
-- 源码：`/home/mist/work/ddns-go`（分支 `v0.16`，以仓库当前 HEAD 为准）
-- 镜像：`ddns-go-email:6.17.7-email-0.16`（多阶段构建，已移除 curl/grep）
+- 源码：`/home/mist/work/ddns-go`（分支 `v0.17`，以仓库当前 HEAD 为准）
+- 镜像：`ddns-go-email:6.17.7-email-0.17`（多阶段构建，已移除 curl/grep）
 - 测试：`/home/mist/emailtest`（假 SMTP + 假回调，可随时重跑）
 
 > **不要使用 `-u` 参数。** 它会从上游 GitHub releases 下载官方二进制覆盖自身，
@@ -17,9 +17,9 @@
 | `config/email.go` | 新增：`Email` 配置结构、SMTP 投递、邮件模板、IP 变更状态持久化 |
 | `config/config.go` | `Config` 增加 `Email Email` 字段；新增 `ResetConfigCache()`（测试用） |
 | `dns/index.go` | 每轮收集检测到的 IP，循环结束后调用 `NotifyIPChangeEmail` |
-| `web/save.go` | 解析并保存邮件配置；SMTP 密码留空表示保持原值 |
+| `web/save.go` | 解析并保存邮件配置；SMTP 密码留空表示保持原值；目标/账号/加密变化时必须重新输入 |
 | `web/writing.go` + `web/writing.html` | 新增「邮件通知」配置区与「发送测试邮件」按钮 |
-| `web/emailTest.go` | 新增 `/emailTest` 接口（限频 5 秒，且仅在目标与已保存配置一致时复用已存密码） |
+| `web/emailTest.go` | 新增 `/emailTest` 接口（限频 5 秒，且仅在凭据作用域完全一致时复用已存密码） |
 | `web/emailStatus.go` | 新增 `/emailStatus`（状态面板数据）、`/emailHistoryClear`（清空历史，仅 POST） |
 | `config/email_history.go` | 通知历史（JSONL，最多 200 条） |
 | `main.go` | 注册 `/emailTest` / `/emailStatus` / `/emailHistoryClear` 路由；`-f` 检测间隔默认值 300 → **600 秒** |
@@ -68,7 +68,7 @@ fork 版把默认检测间隔从 300 秒改为 **600 秒（10 分钟）**：
 ```bash
 docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.16 -l :9876 -f 120
+  ddns-go-email:6.17.7-email-0.17 -l :9876 -f 120
 ```
 
 ## 配置字段
@@ -116,8 +116,8 @@ cd /home/mist/work/ddns-go
 REV=$(git rev-parse --short HEAD)
 sudo docker build -f Dockerfile.email \
   --build-arg REVISION=$REV \
-  -t ddns-go-email:6.17.7-email-0.16 \
-  -t ivanzzffii/ddns-go-email:6.17.7-email-0.16 .
+  -t ddns-go-email:6.17.7-email-0.17 \
+  -t ivanzzffii/ddns-go-email:6.17.7-email-0.17 .
 ```
 
 ## 运行
@@ -126,7 +126,7 @@ sudo docker build -f Dockerfile.email \
 sudo docker run -d --name ddns-go-email --restart unless-stopped \
   -p 9876:9876 \
   -v /opt/ddns-go:/root \
-  ddns-go-email:6.17.7-email-0.16
+  ddns-go-email:6.17.7-email-0.17
 ```
 
 打开 `http://<主机IP>:9876`，配置 DNS 与邮件通知后保存即可。
@@ -150,6 +150,27 @@ python3 /home/mist/work/test/verify_mail.py
 - IP 未变 → 不重复发送
 
 ## 更新记录
+
+### 6.17.7-email-0.17
+
+按 0.16 的功能审计修复重点问题。
+
+| 级别 | 问题 | 修复 |
+|---|---|---|
+| P1 | 改 SMTP 主机/端口/账号但密码留空时仍复用旧密码；`/emailTest` 的防外送检查可被 `/save` 绕过 | 新增 `Email.CredentialScopeEqual`：只有主机/端口/账号/有效加密方式都一致才允许复用密码；`/save` 在目标变化且未输入新密码时直接拒绝；`/emailTest` 使用同一判定 |
+| P2 | 旧告警未清除时，新出现的 IPv6/新源故障被旧 `alerted` 压住；恢复邮件只提旧地址族 | `FetchStatus` 增加精确的 `FailedFamilyKeys`/`ConfiguredFamilyKeys`/`OKFamilyKeys`；tracker 按 `source|family` 记录已告警集合，新失败项单独累计阈值并发新告警；恢复只对“原来失败、仍启用、现在成功”的项发信 |
+| P2 | 失败源只关闭自己出问题的地址族、同族还有另一个健康源时，误发“已恢复” | 恢复判断改为逐项核对原失败 `source|family`，不再用“某个源还存在 + 全局族仍启用”冒充恢复 |
+| P2 | 源身份 hash 漏 `Ipv6Reg`；近似/重复配置共用 Key 时可能每轮误发变更 | hash 加入 `Ipv6Reg`、IPv4/IPv6 Enable、分族域名；状态键保持 `sourceKey` 格式 |
+| P3 | 单族失败告警正文把另一地址族的域名也列为故障域名 | `FailedSource.Domains` 按实际失败族生成，告警只列受影响域名 |
+| P3 | 邮件状态文件 `os.WriteFile + rename` 没有 `fsync` | 改为 `OpenFile -> Write -> Sync -> Close -> Rename`，与配置文件一致 |
+
+**升级说明**：状态文件 schema 升到 3，旧 `AlertedFamilies`/`AlertedSources` 会在读取时迁移成 `AlertedFailureKeys`。0.16 的单布尔告警在升级首轮若仍在故障中，会按新集合避免重复告警；新出现的失败项需要重新累计 3 轮。
+
+**源 Key 变化**：无名/重名源的 hash 新增 `Ipv6Reg`、分族 Enable/域名，升级后首轮会静默重建基线；如果恰好那轮 IP 变化，会漏一封。命名唯一的配置 Key 不变。
+
+**密码行为变化**：修改 SMTP 目标/账号/加密方式时，留空密码不再静默保留，保存会提示重新输入。
+
+新增测试：`config/email_017_test.go`（新故障告警、失败源禁用族不误恢复、双族恢复、凭据作用域）、`dns/email_017_test.go`（Ipv6Reg 身份、失败族域名）、`web/email_test.go`（目标变化拒绝留空密码）。
 
 ### 6.17.7-email-0.16
 

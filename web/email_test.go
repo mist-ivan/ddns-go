@@ -104,9 +104,13 @@ user:
     password: ""
 email:
     enable: false
-    smtphost: old.example.com
+    smtphost: smtp.qq.com
+    smtpport: 587
+    username: me@qq.com
     password: saved-secret
-    to: old@example.com
+    from: me@qq.com
+    to: a@x.com, b@y.com
+    encrypt: starttls
 notallowwanaccess: true
 lang: zh
 `
@@ -163,6 +167,67 @@ lang: zh
 	}
 	if strings.Contains(text, "V3ry-Str0ng-Passphrase!2026") {
 		t.Fatal("user password must be hashed, not stored in plain text")
+	}
+}
+
+// 改 SMTP 主机/账号但留空密码时，必须拒绝保存，不能把旧密码发给新目标。
+func TestSaveRejectsOldPasswordForNewSMTPServer(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	initial := `dnsconf: []
+user:
+    username: admin
+    password: ""
+email:
+    enable: false
+    smtphost: old.example.com
+    smtpport: 587
+    username: me@old.example.com
+    password: old-smtp-secret
+    from: me@old.example.com
+    to: a@x.com
+    encrypt: starttls
+notallowwanaccess: true
+lang: zh
+`
+	if err := os.WriteFile(cfgPath, []byte(initial), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(util.ConfigFilePathENV, cfgPath)
+	config.ResetConfigCache()
+
+	payload := `{
+      "Username": "admin",
+      "Password": "V3ry-Str0ng-Passphrase!2026",
+      "Lang": "zh",
+      "NotAllowWanAccess": true,
+      "EmailEnable": true,
+      "EmailSMTPHost": "smtp.qq.com",
+      "EmailSMTPPort": "587",
+      "EmailUsername": "me@qq.com",
+      "EmailPassword": "",
+      "EmailFrom": "me@qq.com",
+      "EmailTo": "a@x.com",
+      "EmailEncrypt": "starttls",
+      "EmailAlertOnFetchFailure": true,
+      "DnsConf": []
+    }`
+	rec := httptest.NewRecorder()
+	Save(rec, httptest.NewRequest("POST", "/save", strings.NewReader(payload)))
+	if strings.Contains(rec.Body.String(), `"result":"ok"`) {
+		t.Fatalf("save should have been rejected: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "重新输入") {
+		t.Fatalf("unexpected error: %s", rec.Body.String())
+	}
+
+	saved, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(saved), "smtphost: old.example.com") ||
+		!strings.Contains(string(saved), "password: old-smtp-secret") {
+		t.Fatalf("rejected save must not alter the old config:\n%s", saved)
 	}
 }
 
